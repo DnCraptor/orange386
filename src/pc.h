@@ -134,6 +134,17 @@ void pc_step(PC *pc, size_t max_ops);
 /* Service emulated devices without executing guest CPU instructions. */
 void pc_service(PC *pc);
 
+/* Native BIOS POST (bios=native / empty bios in config.ini). */
+void bios_post(PC *pc);
+
+/* Select the first native BIOS POST path: cold on a fresh start, warm after
+ * an emulator reboot.  bios_post() consumes the cold state; later resets in
+ * the same run are warm. */
+void pc_set_cold_post_pending(bool cold);
+
+/* Play the native POST result tone once the audio thread is running. */
+void pc_play_pending_post_beep(PC *pc);
+
 int parse_conf_ini(void* user, const char* section,
 		   const char* name, const char* value);
 void load_bios_and_reset(PC *pc);

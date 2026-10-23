@@ -4,7 +4,11 @@
 #include "bios.h"
 #include "vga.h"
 #include "board_config.h"
+#if ORANGE386
+#include "platform_linux.h"
+#else
 #include "hardware/clocks.h"
+#endif
 
 #define BIOS_FONT_SEG       0xF000
 #define BIOS_FONT8X16_OFF   0xA000
@@ -2806,7 +2810,6 @@ static bool bios_10h_1Ch(CPU* cpu)
         if (states & 0x04) pos += bios_10h_restore_dac(cpu, pos);
         break;
     default:
-unsupported:
         cf = 1;
         return true;
     }
@@ -3998,19 +4001,29 @@ void bios_10h_install_rom_fonts(CPU* cpu) // calling from load_bios_and_reset
 void vga_bios_baner(CPU* cpu)
 {
     char banner[80];
-    unsigned mhz = (unsigned)(clock_get_hz(clk_sys) / 1000000u);
-    unsigned mv = current_vreg_mv;
 #if I386_MODE
     const char *core = "PC em386 BIOS";
 #else
     const char *core = "PC em286 BIOS";
 #endif
+#if ORANGE386
+    char host[48];
+    platform_host_name(host, sizeof(host));
+    unsigned mhz = platform_cpu_mhz();
+    if (mhz)
+        snprintf(banner, sizeof(banner), "%s %u MHz %s", host, mhz, core);
+    else
+        snprintf(banner, sizeof(banner), "%s %s", host, core);
+#else
+    unsigned mhz = (unsigned)(clock_get_hz(clk_sys) / 1000000u);
+    unsigned mv = current_vreg_mv;
     if (mv)
         snprintf(banner, sizeof(banner), "RP2350%c %u MHz %u.%02uV %s",
                  get_rp2350_package_letter(), mhz, mv / 1000u, (mv % 1000u) / 10u, core);
     else
         snprintf(banner, sizeof(banner), "RP2350%c %u MHz %s",
                  get_rp2350_package_letter(), mhz, core);
+#endif
 
     const uint8_t attr = 0x61; // bg=yellow(6), fg=blue(1)
     const uint8_t row  = 0;

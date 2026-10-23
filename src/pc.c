@@ -9,10 +9,13 @@
 #include "gameport.h"
 #include "config_save.h"
 #include "csm_psg.h"
+#include "platform_linux.h"
+#include "bios/bios.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 #include <unistd.h>
 
 /*
@@ -996,6 +999,12 @@ static PC *_pc_for_fdc = NULL;
 static void fdc_mediachange_notify(int drive) {
     if (_pc_for_fdc && _pc_for_fdc->fdc)
         fdc_media_changed(_pc_for_fdc->fdc, drive);
+
+    /* disk.c has a single media-change callback slot.  Once the hardware FDC
+       callback replaces bios_13h_init()'s early callback, explicitly keep the
+       BIOS change-line state in sync as well; FDOS C_MEDIACHK reaches it via
+       INT 13h/AH=16h. */
+    bios_13h_fdc_mediachange(drive);
 }
 
 /* CD-ROM media change callback: called by disk layer when a CD-ROM drive
@@ -1037,6 +1046,9 @@ PC *pc_new(SimpleFBDrawFunc *redraw, void (*poll)(void *), void *redraw_data,
 		enable_fpu(pc->cpu);
 	pc->bios = conf->bios;
 	pc->cpu->bios = pc->bios;
+	if (!pc->bios) {
+		cpu_install_bios_handlers(pc->cpu);
+	}
 	pc->vga_bios = conf->vga_bios;
 	pc->cpu->native_done = false;
 	pc->enable_serial = conf->enable_serial;
@@ -1056,6 +1068,7 @@ PC *pc_new(SimpleFBDrawFunc *redraw, void (*poll)(void *), void *redraw_data,
 	/* Set up INT 13h disk handler (real mode - DOS) */
 	disk_set_cpu(pc->cpu);
 	disk_set_cmos_callback(cmos_floppy_update);
+	bios_13h_init();
 
 	/* Set up IDE emulation (protected mode - Win95) */
 	pc->ide  = ide_allocate(14, pc->pic, set_irq);
@@ -1210,6 +1223,770 @@ PC *pc_new(SimpleFBDrawFunc *redraw, void (*poll)(void *), void *redraw_data,
 	return pc;
 }
 
+static void rom_puts(uint32_t addr, const char *s) {
+    while (*s) pstore8(addr++, (uint8_t)*s++);
+    pstore8(addr, 0x00);
+}
+
+/* "Jul 12 2026" (__DATE__) -> "07/12/26" */
+static void rom_bios_date(uint32_t addr) {
+    static const char mon[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    const char *d = __DATE__;               /* "Mmm dd yyyy" */
+    int m = 0;
+    for (int i = 0; i < 12; ++i)
+        if (!strncmp(d, mon + i * 3, 3)) { m = i + 1; break; }
+    char buf[9];
+    buf[0] = '0' + m / 10;  buf[1] = '0' + m % 10;  buf[2] = '/';
+    buf[3] = (d[4] == ' ') ? '0' : d[4];
+    buf[4] = d[5];          buf[5] = '/';
+    buf[6] = d[9];          buf[7] = d[10]; buf[8] = 0;
+    for (int i = 0; i < 8; ++i) pstore8(addr + i, (uint8_t)buf[i]);
+}
+
+// IRET is saved on 0xFFF06
+static void point2iret(u32 intno) {
+	pstore16(intno*4, 0x0006);
+	pstore16(intno*4 + 2, 0xFFF0);
+}
+
+static void install_dpte(int idx, uint32_t addr)
+{
+    bios_hdd_info_t info;
+    if (!bios_hdd_get_info((uint8_t)idx, &info) || info.ata_slot < 0) {
+        for (int i = 0; i < 16; i++)
+            pstore8(addr + i, 0x00);
+        return;
+    }
+	// Primary IDE: 0x1F0, Secondary: 0x170
+    int8_t slot = info.ata_slot;
+    uint16_t iobase  = (slot < 2) ? 0x01F0 : 0x0170;
+    uint16_t ctlbase = (slot < 2) ? 0x03F6 : 0x0376;
+//    uint8_t  devhead = (slot & 1) ? 0xB0 : 0xA0; // slave/master
+	uint8_t  devhead = (slot & 1) ? 0xF0 : 0xE0; // With LBA
+
+    uint8_t buf[16] = {0};
+    buf[0]  = (uint8_t)(iobase & 0xFF);
+    buf[1]  = (uint8_t)(iobase >> 8);
+    buf[2]  = (uint8_t)(ctlbase & 0xFF);
+    buf[3]  = (uint8_t)(ctlbase >> 8);
+    buf[4]  = devhead;
+    buf[5]  = 0x00;   // host bus/interface type: ISA-compatible ATA
+    buf[6]  = 0x00;   // flags: no CHS translation/DMA assumptions
+    buf[7]  = 0x02;   // PIO mode 2
+    buf[8]  = 0x00;   // DMA mode: none
+    buf[9]  = 0x0B;   // PIO cycle timing, conservative default
+    buf[10] = 0x00;
+    buf[11] = 0x00;   // DMA channel
+    buf[12] = 0x00;
+    buf[13] = 0x00;
+    buf[14] = 0x00;
+    buf[15] = 0x00;   // checksum placeholder
+
+    // checksum: сумма байт 0..14, результат = (-sum) & 0xFF
+    uint8_t sum = 0;
+    for (int i = 0; i < 15; i++) sum += buf[i];
+    buf[15] = (uint8_t)((-sum) & 0xFF);
+
+    for (int i = 0; i < 16; i++)
+        pstore8(addr + i, buf[i]);
+}
+
+static void install_hdd_dpt(PC *pc, int idx, uint32_t addr)
+{
+    // Вектор INT 41h = 0x104, INT 46h = 0x118
+    uint32_t vec = (idx == 0) ? 0x41 * 4 : 0x46 * 4;
+    bios_hdd_info_t info;
+
+    if (!bios_hdd_get_info((uint8_t)idx, &info)) {
+        // Нет диска — вектор указывает на нули, не на fake BIOS
+        // Просто обнулить таблицу и поставить вектор
+        for (int i = 0; i < 16; i++)
+            pstore8(addr + i, 0x00);
+        pstore16(vec, 0x0000);
+        pstore16(vec + 2, 0x0000);
+        return;
+	} else {
+        uint16_t cyls  = info.cyls;
+        uint16_t heads = info.heads;
+        uint16_t sects = info.sects;
+
+        // Fixed Disk Parameter Table, 16 bytes (INT 41h/46h format)
+        pstore16(addr + 0x00, cyls);          /* max cylinders */
+        pstore8 (addr + 0x02, (uint8_t)heads);/* max heads */
+        pstore8 (addr + 0x03, 0x00);          /* reserved (XT: starting reduced write current cyl low) */
+        pstore8 (addr + 0x04, 0x00);          /* reserved (XT: starting reduced write current cyl high) */
+
+		pstore16(addr + 0x05, 0xFFFF);                    /* write precomp: disabled */
+		pstore8 (addr + 0x07, 0x0B);                      /* max ECC burst length */
+		pstore8 (addr + 0x08, heads > 8 ? 0x08 : 0x00);  /* drive control */
+        pstore8 (addr + 0x09, 0x00);          /* reserved */
+        pstore8 (addr + 0x0A, 0x00);          /* reserved */
+        pstore8 (addr + 0x0B, 0x00);          /* reserved */
+		pstore16(addr + 0x0C, cyls ? (cyls - 1) : 0);     /* landing zone */
+        pstore8 (addr + 0x0E, (uint8_t)sects);/* sectors per track */
+        pstore8 (addr + 0x0F, 0x00);          /* reserved */
+    }
+
+    // Вектор → таблица (в любом случае, даже если нули)
+    pstore16(vec,     (uint16_t)(addr - 0xF0000)); /* offset */
+    pstore16(vec + 2, 0xF000);                     /* segment */	
+}
+
+static int bios_post_beep_pending;
+static bool bios_cold_post_pending = true;
+
+void pc_set_cold_post_pending(bool cold)
+{
+    bios_cold_post_pending = cold;
+}
+
+static void bios_post_table_rule(PC *pc, uint8_t left, uint8_t middle, uint8_t right)
+{
+    static char line[81];
+
+    line[0] = (char)left;
+    memset(line + 1, 0xC4, 38);
+    line[39] = (char)middle;
+    memset(line + 40, 0xC4, 39);
+    line[79] = (char)right;
+    line[80] = 0;
+    bios_puts(pc->cpu, line);
+}
+
+static void bios_post_table_row(PC *pc, const char *left, const char *right)
+{
+    static char line[81];
+    size_t n;
+
+    memset(line, ' ', 80);
+    line[0] = (char)0xB3;
+    line[39] = (char)0xB3;
+    line[79] = (char)0xB3;
+
+    n = strlen(left);
+    if (n > 36) n = 36;
+    memcpy(line + 2, left, n);
+
+    n = strlen(right);
+    if (n > 37) n = 37;
+    memcpy(line + 41, right, n);
+
+    line[80] = 0;
+    bios_puts(pc->cpu, line);
+}
+
+static const char *bios_post_fdd_type(uint8_t drive)
+{
+    switch ((fdds_types() >> (drive ? 4 : 0)) & 0x0F) {
+    case 1: return "360 KB 5.25";
+    case 2: return "1.2 MB 5.25";
+    case 3: return "720 KB 3.5";
+    case 4: return "1.44 MB 3.5";
+    case 5: return "2.88 MB 3.5";
+    default: return "none";
+    }
+}
+
+static void bios_post_hdd_text(char *dst, size_t dst_size, uint8_t bios_index)
+{
+    bios_hdd_info_t info;
+
+    if (!bios_hdd_get_info(bios_index, &info)) {
+        dst[0] = 0;
+        return;
+    }
+
+    unsigned long mib = (unsigned long)(info.total_sectors >> 11);
+    if (info.raw_sd) {
+        snprintf(dst, dst_size, "HDD %02Xh  : RAW-SD %lu MB",
+                 0x80u + bios_index, mib);
+    } else if (info.raw_usb) {
+        snprintf(dst, dst_size, "HDD %02Xh  : USB-MSC %lu MB",
+                 0x80u + bios_index, mib);
+    } else {
+        unsigned controller = (unsigned)info.ata_slot >> 1;
+        unsigned device = (unsigned)info.ata_slot & 1u;
+        snprintf(dst, dst_size, "HDD %02Xh  : ATA%u-%u %lu MB",
+                 0x80u + bios_index, controller, device, mib);
+    }
+}
+
+static void bios_post_components(PC *pc)
+{
+    char left[40], right[40];
+    char serial[40], parallel[40];
+    char hdd[6][40];
+
+#if I386_MODE
+	switch(pc->cpu->gen) {
+		case 4:
+    		snprintf(left, sizeof(left), "CPU      : i486");
+			break;
+		case 5:
+    		snprintf(left, sizeof(left), "CPU      : Am5x86"); // TODO: ensure
+			break;
+		case 6:
+    		snprintf(left, sizeof(left), "CPU      : Cx6x86");
+			break;
+		default:
+    		snprintf(left, sizeof(left), "CPU      : 80386");
+			break;
+	}
+#else
+	switch(pc->cpu->gen) {
+		case 0:
+    		snprintf(left, sizeof(left), "CPU      : 8086 ");
+			break;
+		case 1:
+    		snprintf(left, sizeof(left), "CPU      : 80186");
+			break;
+		default:
+    		snprintf(left, sizeof(left), "CPU      : 80286");
+			break;
+	}
+#endif
+    snprintf(right, sizeof(right), "FPU      : %s",
+             pc->fpu_enabled ? "80387" : "not installed");
+
+    bios_post_table_rule(pc, 0xDA, 0xC2, 0xBF);
+    bios_post_table_row(pc, left, right);
+
+    snprintf(left, sizeof(left), "Video    : %s [HDMI]", video_profile_name());
+    {
+        unsigned long host_mb = platform_host_ram_mb();
+        if (host_mb)
+            snprintf(right, sizeof(right), "Host RAM : %lu MB", host_mb);
+        else
+            snprintf(right, sizeof(right), "Host RAM : unknown");
+    }
+    bios_post_table_row(pc, left, right);
+#if EMULATE_LTEMS
+    if (phys_mem_size >= (4u << 20)) {
+    	snprintf(left, sizeof(left), "PC RAM   : %lu KB / 2048 KB EMS",
+        	     (unsigned long)((phys_mem_size - 2048) >> 10));
+	} else {
+		snprintf(left, sizeof(left), "PC RAM   : %lu KB",
+				(unsigned long)(phys_mem_size >> 10));
+	}
+#else
+    snprintf(left, sizeof(left), "PC RAM   : %lu KB",
+             (unsigned long)(phys_mem_size >> 10));
+#endif
+    snprintf(right, sizeof(right), "Mouse    : %s",
+             pc->mouse_enabled ? "PS/2" : "not installed");
+    bios_post_table_row(pc, left, right);
+
+    bios_post_table_rule(pc, 0xC3, 0xC5, 0xB4);
+
+    snprintf(serial, sizeof(serial), "Serial   : %s",
+             pc->enable_serial ? "03F8h" : "none");
+    if (pc->dss_enabled && pc->covox_enabled != COVOX_DISABLED)
+        snprintf(parallel, sizeof(parallel), "Parallel : 0378h 0278h");
+    else if (pc->dss_enabled)
+        snprintf(parallel, sizeof(parallel), "Parallel : 0378h");
+    else if (pc->covox_enabled != COVOX_DISABLED)
+        snprintf(parallel, sizeof(parallel), "Parallel : 0278h");
+    else
+        snprintf(parallel, sizeof(parallel), "Parallel : none");
+
+    snprintf(left, sizeof(left), "FDD A    : %s", bios_post_fdd_type(0));
+    bios_post_table_row(pc, left, serial);
+    snprintf(left, sizeof(left), "FDD B    : %s", bios_post_fdd_type(1));
+    bios_post_table_row(pc, left, parallel);
+
+    for (uint8_t i = 0; i < 6; ++i)
+        bios_post_hdd_text(hdd[i], sizeof(hdd[i]), i);
+
+    if (!hdd[0][0]) {
+        strcpy(left, "HDD      : none");
+        bios_post_table_row(pc, left, "");
+    } else {
+        for (uint8_t i = 0; i < 6; i += 2) {
+            if (!hdd[i][0] && !hdd[i + 1][0])
+                break;
+            bios_post_table_row(pc, hdd[i], hdd[i + 1]);
+        }
+    }
+
+    bios_post_table_rule(pc, 0xC0, 0xC1, 0xD9);
+}
+
+void pc_play_pending_post_beep(PC *pc)
+{
+    int result = bios_post_beep_pending;
+    if (!result || !pc || !pc->pcspk || !pc->pcspk_enabled)
+        return;
+
+    bios_post_beep_pending = 0;
+
+    unsigned hz = result > 0 ? 1000u : 300u;
+    unsigned ms = result > 0 ? 100u : 500u;
+    uint16_t divisor = (uint16_t)(PIT_FREQ / hz);
+    if (divisor == 0)
+        divisor = 1;
+
+    uint8_t old61 = (uint8_t)pcspk_ioport_read(pc->pcspk);
+    i8254_ioport_write(pc->pit, 0x43, 0xB6); /* ch2, lo/hi, mode 3 */
+    i8254_ioport_write(pc->pit, 0x42, divisor & 0xFF);
+    i8254_ioport_write(pc->pit, 0x42, divisor >> 8);
+    pcspk_ioport_write(pc->pcspk, old61 | 0x03);
+
+    /* The ALSA thread keeps mixing while this thread sleeps with PIT2
+     * connected to the speaker. */
+    const struct timespec tone = {
+        .tv_sec = 0,
+        .tv_nsec = (long)ms * 1000000L,
+    };
+    nanosleep(&tone, NULL);
+    pcspk_ioport_write(pc->pcspk, old61);
+}
+
+void bios_post(PC *pc) {
+// POST
+    const uint16_t ebda_seg = 0x9FC0;                 /* 1 KiB EBDA at 9FC00 */
+    const uint32_t ebda_phys = (uint32_t)ebda_seg << 4;
+    const bool cold_post = bios_cold_post_pending;
+    bios_cold_post_pending = false;
+    /* murm386 resets the native UMB arena (fdos_2fh.c) here; it is set up
+     * together with the native DOS kernel, which is not built on this host. */
+
+    /* Match the controller-visible keyboard state left by SeaBIOS POST. */
+    i8042_bios_post_init(pc->i8042);
+
+    /* Native-режим: в F000 никто ничего не грузил -> там мусор из RAM,
+     * который SysInfo/CheckIt показывают как "Copyright notice".
+     * Чистим сегмент целиком, дальше кладём нормальный ROM-identity. */
+    for (uint32_t a = 0xF0000u; a < 0x100000u; ++a)
+        pstore8(a, 0x00);
+
+    uint32_t ext_ram = phys_mem_size <= (1024 << 10) ? 0 : (phys_mem_size - (1024 << 10)) >> 10;
+	if (ext_ram > 0xFFFF)
+		ext_ram = 0xFFFF;
+	cmos_write(pc->cpu, 0x17, (uint8_t)(ext_ram & 0xFF)); // low byte extended memory KB
+	cmos_write(pc->cpu, 0x18, (uint8_t)((ext_ram >> 8) & 0xFF)); // high byte
+	/* 17h/18h are inside the standard CMOS checksum range 10h..2Dh. */
+	cmos_update_checksum(pc->cmos);
+// fast IRET cases:
+	for (int i = 0; i < 256; ++i) { // initially all them just pointed to IRET
+		point2iret(i);
+	}
+// init BDA
+	for (uint32_t a = 0x400; a < 0x500; ++a)
+		pstore8(a, 0);
+	/* 40:72 is a BIOS compatibility result, not the input used to choose
+	 * the POST path. Cold POST leaves it clear; every later soft/warm POST
+	 * publishes the standard IBM warm-boot signature. */
+	pstore16(0x472, cold_post ? 0x0000 : 0x1234);
+// init EDBA
+	for (uint32_t a = ebda_phys; a < ebda_phys + 1024; ++a)
+        pstore8(a, 0);
+    pstore8(ebda_phys + 0x00, 1);                    /* EBDA size, KiB */
+// Zero-valued BDA fields are omitted below: the whole BDA was cleared above.
+	/* BIOS Data Area, IBM PC/AT compatible minimum. */
+	pstore16(0x400, pc->enable_serial ? 0x03F8 : 0x0000); /* COM1 base */
+//	pstore16(0x402, 0x0000);                              /* COM2 base */
+//	pstore16(0x404, 0x0000);                              /* COM3 base */
+//	pstore16(0x406, 0x0000);                              /* COM4 base */
+	/* LPT1 = 0x378 (Disney Sound Source / принтер), LPT2 = 0x278 (Covox) */
+	uint8_t lpt_count = 0;
+	if (pc->dss_enabled)
+		pstore16(0x408 + 2 * lpt_count++, 0x0378);
+	if (pc->covox_enabled)
+		pstore16(0x408 + 2 * lpt_count++, 0x0278);
+	for (unsigned i = 0; i < lpt_count; ++i)
+		pstore8(0x478 + i, 0x14);   /* printer timeout, 20 тиков */
+	pstore16(0x40E, ebda_seg);                            /* EBDA segment */
+
+	uint16_t equipment = (uint16_t)(lpt_count & 3) << 14; /* биты 15-14 LPT */
+	equipment |= 0x0001;                                  /* diskette subsystem present */
+	if (pc->fpu_enabled)
+		equipment |= 0x0002;                          /* math coprocessor installed */
+	/* Биты 5-4 (initial video mode) = 00b: дисплейный адаптер с
+	   собственным BIOS (EGA/VGA). Значение 10b ("CGA 80x25") включает
+	   snow-checking у детект-библиотек эпохи: equipment word читается
+	   раньше INT 10h/AH=1Ah, и Norton SI пословно ждёт ретрейс 3DAh
+	   на всю отрисовку (кадр на слово). Реальный POST с VGA-картой
+	   ставит здесь 00b. */
+	if (pc->enable_serial)
+		equipment |= 0x0200;                              /* one serial port */
+	if (pc->mouse_enabled)
+		equipment |= 0x0004;                              /* pointing device */
+	equipment |= (1u << 6);                               /* two diskette drives, encoded count-1 */
+	pstore16(0x410, equipment);
+
+	/* SeaBIOS post.c: SET_BDA(mem_size_kb, ebda_seg / (1024/16)) - размер
+	   conventional памяти ВЫВОДИТСЯ из адреса EBDA, а не берётся как 640.
+	   При ebda_seg = 0x9FC0 это 639 КБ: иначе INT 12h отдаёт DOS тот КБ,
+	   в котором лежит EBDA. */
+	uint16_t ebda_kb = (uint16_t)(ebda_phys >> 10);      /* 0x9FC00 -> 639 */
+	uint16_t conventional_kb = (uint16_t)(phys_mem_size >> 10);
+	if (conventional_kb > ebda_kb)
+		conventional_kb = ebda_kb;
+	pstore16(0x413, conventional_kb);                    /* INT 12h value */
+
+//	pstore8 (0x417, 0x00);                               /* keyboard flags */
+//	pstore8 (0x418, 0x00);
+	pstore16(0x41A, 0x001E);                             /* kbd buffer head */
+	pstore16(0x41C, 0x001E);                             /* kbd buffer tail */
+
+	/* Diskette BIOS work area.  INT 13h keeps the last FDD status here. */
+//	pstore8 (0x43E, 0x00);                               /* diskette recalibration/status */
+//	pstore8 (0x43F, 0x00);                               /* diskette motor status */
+//	pstore8 (0x440, 0x00);                               /* diskette motor timeout */
+//	pstore8 (0x441, 0x00);                               /* last diskette status */
+//	for (uint32_t a = 0x442; a <= 0x448; ++a)
+//		pstore8(a, 0x00);                                  /* FDC result/status bytes */
+//	pstore8 (0x48B, 0x00);                               /* diskette media state 0/1 */
+//	pstore8 (0x490, 0x00);                               /* diskette drive 0 media type */
+//	pstore8 (0x491, 0x00);                               /* diskette drive 1 media type */
+//	pstore8 (0x494, 0x00);                               /* diskette current track drive 0 */
+//	pstore8 (0x495, 0x00);                               /* diskette current track drive 1 */
+
+	pstore8 (0x449, 0x03);                               /* current video mode */
+	pstore16(0x44A, 80);                                 /* columns */
+	pstore16(0x44C, 0x1000);                             /* video page size (4096, IBM AT std for mode 3) */
+//	pstore16(0x44E, 0x0000);                             /* active page offset */
+//	for (uint32_t a = 0x450; a < 0x460; a += 2)
+//		pstore16(a, 0x0000);                              /* cursor positions */
+	pstore16(0x460, 0x0607);                             /* cursor shape */
+//	pstore8 (0x462, 0x00);                               /* active page */
+	pstore16(0x463, 0x03D4);                             /* color CRTC base */
+	/* 40:65 - это video_msr (тень порта 3x8h), его проставит set-mode.
+	   Значение video_ctl 0x60 пишется ниже по своему адресу 40:87. */
+	pstore8 (0x465, 0x29);                               /* video_msr: mode 3 */
+//	pstore8 (0x466, 0x00);                               /* CGA palette */
+
+//	pstore8 (0x46B, 0x00);                               /* ctrl-break flag */
+	/* D5. SeaBIOS clock_setup() засевает timer_counter текущим временем
+	   RTC; без этого INT 1Ah/AH=00h до первого тика отдаёт 00:00, и DOS
+	   стартует с полуночи. Множитель привязан к TICKS_PER_DAY (0x1800B0),
+	   которым INT 08h делает rollover, поэтому результат гарантированно
+	   меньше суток. От ticks_from_ms() SeaBIOS отличается не более чем на
+	   4 тика (~0.2 c) из-за двойного округления вверх у эталона. */
+	{
+		uint8_t bh = cmos_read(pc->cpu, 0x04);
+		uint8_t bm = cmos_read(pc->cpu, 0x02);
+		uint8_t bs = cmos_read(pc->cpu, 0x00);
+		uint32_t hh = ((bh >> 4) & 0x0F) * 10u + (bh & 0x0F);
+		uint32_t mm = ((bm >> 4) & 0x0F) * 10u + (bm & 0x0F);
+		uint32_t ss = ((bs >> 4) & 0x0F) * 10u + (bs & 0x0F);
+		uint32_t secs = (hh * 60u + mm) * 60u + ss;
+		if (secs >= 86400u) secs = 0;
+		pstore32(0x46C, (uint32_t)(((uint64_t)secs * 0x1800B0u) / 86400u));
+	}
+	pstore8 (0x470, 0x00);                               /* midnight flag */
+//	pstore8 (0x471, 0x00);                               /* break flag */
+//	pstore16(0x472, 0x0000);                             /* reset flag */
+//	pstore8 (0x474, 0x00);                               /* last HDD status */
+	pstore8 (0x475, bios_hdd_count());                         /* fixed disk count */
+	/* SeaBIOS block.c: drive_control_byte = 0xC0 | ((heads > 8) << 3). */
+	{
+		uint8_t ctrl = 0xC0;
+        bios_hdd_info_t first_hdd;
+        if (bios_hdd_get_info(0, &first_hdd) && first_hdd.heads > 8)
+            ctrl |= 0x08;
+		pstore8 (0x476, ctrl);                           /* HDD control byte */
+	}
+//	pstore8 (0x477, 0x00);                               /* HDD I/O port offset */
+//	pstore8 (0x478, 0x00);                               /* LPT timeouts */
+//	pstore8 (0x479, 0x00);
+//	pstore8 (0x47A, 0x00);
+	pstore8 (0x47C, 0x01);                               /* COM1 timeout */
+//	pstore8 (0x47D, 0x00);
+//	pstore8 (0x47E, 0x00);
+//	pstore8 (0x47F, 0x00);
+	pstore16(0x480, 0x001E);                             /* keyboard buffer start */
+	pstore16(0x482, 0x003E);                             /* keyboard buffer end */
+	pstore8 (0x484, 24);                                 /* rows minus one */
+	pstore16(0x485, 16);                                 /* char height */
+	pstore8 (0x487, video_profile_is_mcga() ? 0x00 :
+	                    (video_profile_has_256k_vram() ? 0x60 : 0x20));
+	pstore8 (0x488, 0xF9);                               /* video_switches */
+	pstore8 (0x489, 0x51);                               /* modeset_ctl (SeaBIOS vgainit.c:144) */
+	/* 40:8E = disk_interrupt_flag, 40:8F = floppy_harddisk_info.
+	   0x77 (два дисковода) относится к 40:8F - SeaBIOS block.c:297. */
+	pstore8 (0x48E, 0x00);                               /* disk_interrupt_flag */
+	pstore8 (0x48F, 0x77);                               /* floppy_harddisk_info */
+	pstore8(0x496, 0x10);   /* KF1: bit4 = enhanced (101/102-key) keyboard */
+	pstore8(0x497, 0x00);   /* LED flags */
+
+// init PIC (i8259) — IBM PC/AT sequence
+	// Master PIC: base vector 0x08 (IRQ0→INT 08h … IRQ7→INT 0Fh)
+	i8259_ioport_write(pc->pic, 0x20, 0x11); // ICW1: edge, cascade, ICW4 needed
+	i8259_ioport_write(pc->pic, 0x21, 0x08); // ICW2: base vector 0x08
+	i8259_ioport_write(pc->pic, 0x21, 0x04); // ICW3: slave on IRQ2
+	i8259_ioport_write(pc->pic, 0x21, 0x01); // ICW4: 8086 mode
+	i8259_ioport_write(pc->pic, 0x21, 0x00); // OCW1: unmask all IRQs
+	// Slave PIC: base vector 0x70 (IRQ8→INT 70h … IRQ15→INT 77h)
+	i8259_ioport_write(pc->pic, 0xA0, 0x11); // ICW1
+	i8259_ioport_write(pc->pic, 0xA1, 0x70); // ICW2: base vector 0x70
+	i8259_ioport_write(pc->pic, 0xA1, 0x02); // ICW3: slave id 2
+	i8259_ioport_write(pc->pic, 0xA1, 0x01); // ICW4: 8086 mode
+	i8259_ioport_write(pc->pic, 0xA1, 0x00); // OCW1: unmask all IRQs
+
+// init PIT (i8254) — channel 0: mode 3, 18.2 Hz
+	// OUT 43h, 36h: channel 0, LSB/MSB, mode 3 (square wave), binary
+	// OUT 40h, 00h: LSB=0
+	// OUT 40h, 00h: MSB=0  → count = 0x10000 = 65536 → 1193182/65536 ≈ 18.2 Hz
+	i8254_ioport_write(pc->pit, 0x43, 0x36);
+	i8254_ioport_write(pc->pit, 0x40, 0x00);
+	i8254_ioport_write(pc->pit, 0x40, 0x00);
+
+// Native BIOS entry table.  Keep real guest-visible vectors so TSRs may
+// hook an INT, save the old vector and chain to it with JMP/CALL FAR.
+// The CPU cores intercept 0F FF <id> only from this ROM table and FFEFF callback sentinel.
+    for (uint16_t ipa = 0; ipa <= 0xFF; ++ipa) {
+        uint32_t stub = NATIVE_BIOS_STUB_PHYS + NATIVE_BIOS_STUB_SIZE * ipa;
+        pstore8(stub + 0, 0x0F);
+        pstore8(stub + 1, 0xFF);
+        pstore8(stub + 2, (uint8_t)ipa);
+        if (ipa == 0xFF) {
+            /* INT FFh is the callback dispatcher itself.  bios_FFh matches
+               the logical CS:IP against callback expected_cs/expected_ip,
+               so preserve its historical guest-visible vector. */
+            pstore16(ipa * 4, 0x00FF);
+            pstore16(ipa * 4 + 2, 0xFFE0);
+        } else {
+            pstore16(ipa * 4, NATIVE_BIOS_STUB_OFF_FOR(ipa));
+            pstore16(ipa * 4 + 2, NATIVE_BIOS_STUB_SEG);
+        }
+    }
+    /* Native callback return sentinel.  bios_FFh distinguishes nested
+       callbacks by the logical CS:IP restored from the guest stack. */
+    pstore8(NATIVE_BIOS_CALLBACK_PHYS + 0, 0x0F);
+    pstore8(NATIVE_BIOS_CALLBACK_PHYS + 1, 0xFF);
+    pstore8(NATIVE_BIOS_CALLBACK_PHYS + 2, 0xFF);
+ // reusable IRET
+    pstore8(0xFFF06, 0xCF);
+// IRQ1 INT 15h/4Fh keyboard intercept stub: 0xFFF70..0xFFF7A
+//   0xFFF70 = scratch byte (scan code, written by bios_09h phase1)
+//   0xFFF71 = stub entry point
+    pstore8(0xFFF70, 0x00); // scratch: scan code placeholder
+    pstore8(0xFFF71, 0xF9); // STC  — CF=1: do not intercept by default
+    pstore8(0xFFF72, 0xCD); // INT 15h
+    pstore8(0xFFF73, 0x15);
+    pstore8(0xFFF74, 0xCD); // INT FFh — callback
+    pstore8(0xFFF75, 0xFF);
+    pstore8(0xFFF76, 0xCF); // IRET — fallback if phase2 returns false
+    pstore8(0xFFF77, 0x90); // NOP
+// NLS support
+	static const uint8_t x86_charmap_stub[] = {
+		0x3C, 0x61,       /* cmp al,'a' */
+		0x72, 0x06,       /* jb done */
+		0x3C, 0x7A,       /* cmp al,'z' */
+		0x77, 0x02,       /* ja done */
+		0x2C, 0x20,       /* sub al,20h */
+		0xCB              /* retf */
+	};	
+	for (size_t i = 0; i < sizeof(x86_charmap_stub); ++i) // 11 bytes [FFF78..FFF82]
+		pstore8(0xFFF78 + i, x86_charmap_stub[i]);
+// INT 15h support:
+    const uint32_t table = 0xFFF10;
+    pstore16(table + 0x00, 0x0008); /* number of bytes following */
+    pstore8 (table + 0x02, 0xFC);   /* model: IBM PC AT */
+    pstore8 (table + 0x03, 0x01);   /* submodel */
+    pstore8 (table + 0x04, 0x01);   /* BIOS revision */
+	/*
+	bit 7 = DMA channel 3 used by fixed disk BIOS
+	bit 6 = второй 8259 PIC установлен
+	bit 5 = RTC установлен
+	bit 4 = INT 15h/AH=4Fh вызывается из INT 09h
+	bit 3 = INT 15h/AH=41h wait for external event поддержан
+	bit 2 = EBDA выделена
+	bit 1 = Micro Channel bus вместо ISA
+	bit 0 = dual bus: Micro Channel + ISA
+	*/
+    pstore8 (table + 0x05, 0b01111100);   /* feature byte 1: slave PIC + RTC + INT15/4Fh + INT15/41h + EDBA */
+	/*
+7      32-bit DMA supported
+6      INT 16/AH=09h (keyboard functionality) supported (see #00585)
+5      INT 15/AH=C6h (get POS data) supported
+4      INT 15/AH=C7h (return memory map info) supported
+3      INT 15/AH=C8h (en/disable CPU functions) supported
+2      non-8042 keyboard controller
+1      data streaming supported
+0      reserved
+	*/
+    pstore8 (table + 0x06, 0b11000000);   /* feature byte 2 */
+	/*
+7      not used
+6-5    reserved
+4      POST supports ROM-to-RAM enable/disable
+3      SCSI subsystem supported on system board
+2      information panel installed
+1      IML (Initial Machine Load) system (BIOS loaded from disk)
+0      SCSI supported in IML
+	*/
+    pstore8 (table + 0x07, 0x00);   /* feature byte 3 */
+	/*
+7      IBM "private" (set on N51SX, CL57SX)
+6      system has EEPROM
+5-3    ABIOS presence.
+001 not supported.
+010 supported in ROM.
+011 supported in RAM (must be loaded)
+2      "private"
+1      system supports memory split at/above 16M
+0      POSTEXT directly supported by POST
+	*/
+    pstore8 (table + 0x08, 0x00);   /* feature byte 4 */
+	/*
+7-5    IBM "private"
+4-2    reserved
+1      system has enhanced mouse mode
+0      flash EPROM
+	*/
+    pstore8 (table + 0x09, 0x00);   /* feature byte 5 */
+// INT 10h support:
+	bios_10h_install_rom_fonts(pc->cpu);
+// INT 1Eh Diskette Parameter Table: F000:EFC7
+	install_floppy_dpt();
+// INT 41h/46h support: 0xFFF30-0xFFF4F
+    install_hdd_dpt(pc, 0, 0xFFF30);  // INT 41h → первый HDD
+    install_hdd_dpt(pc, 1, 0xFFF40);  // INT 46h → второй HDD
+// 0xFFF50-0xFFF6F
+	install_dpte(0, DPTE_ADDR_0);
+	install_dpte(1, DPTE_ADDR_1);
+
+// like VGA BIOS banner:
+	vga_bios_baner(pc->cpu);
+
+    /* Hardware table is shown on every POST, cold or warm. */
+    bios_post_components(pc);
+
+    /* The result tone is a cold-POST feature only.  Guest RAM is host
+     * memory here, so there is no PSRAM test to report: a cold POST always
+     * ends with the "memory OK" tone. */
+    bios_post_beep_pending = cold_post ? 1 : 0;
+// STEP/BREAKPOINT/TRACE etc (no DOS/BIOS support)
+	point2iret(0x01);
+	point2iret(0x03);
+	point2iret(0x04);
+//  do not trap custom timer (to be overriden by DOS)
+	point2iret(0x1C);
+	point2iret(0x77);
+// DOS (set it later, if required):
+	point2iret(0x20);
+	point2iret(0x21);
+	point2iret(0x28); // Idle
+	point2iret(0x29);
+	point2iret(0x2f);
+// MS MOUSE: INT 33h + IRQ12 (INT 74h).
+// Драйвер в bios/bios_33h.c, данные берёт из 8042 по IRQ12
+	/*
+     * Keep INT 33h pointing at a valid entry point even when mouse
+	 * support is disabled.  A null IVT entry is not a callable
+	 * "driver absent" stub: software which probes the vector and then
+	 * calls it starts executing at 0000:0000.
+	 *
+	 * bios_33h() reports AX=0000h for reset/status while disabled.
+	 */
+	pstore16(0x33*4, NATIVE_BIOS_STUB_OFF_FOR(0x33)); pstore16(0x33*4 + 2, NATIVE_BIOS_STUB_SEG);
+	if (pc->mouse_enabled) {
+		pstore16(0x74*4, NATIVE_BIOS_STUB_OFF_FOR(0x74)); pstore16(0x74*4 + 2, NATIVE_BIOS_STUB_SEG);
+	} else {
+		point2iret(0x74);
+	}
+// IRQ14 - HARD DISK CONTROLLER OPERATION COMPLETE (AT and later)
+	point2iret(0x76);
+
+/* --- ROM identity ------------------------------------------------- */
+    static const char rom_copyright[] = "Copyright (C) 2026 Murmulator Group";
+    static const char rom_biosname[]  = "ARM64 Cortex-A53 BIOS";
+
+    /* Note: the identity strings are intentionally NOT placed at F000:0000
+       anymore. F0000-F8FFF is handed to the guest as UMB (see umb_native[] /
+       umb_select_map), so anything here would be overwritten. The copies at
+       F000:C600 and F000:E000 below (outside the UMB window) keep SysInfo /
+       CheckIt happy. */
+    rom_puts(0xFC600, rom_biosname);                 /* F000:C600 (свободно)*/
+    rom_puts(0xFC600 + 32, rom_copyright);
+    rom_puts(0xFE000, rom_copyright);                /* F000:E000 — классика*/
+    rom_puts(0xFE000 + 40, rom_biosname);
+    rom_puts(0xFE000 + 72, "Murmulator Group ORANGE386");
+
+    rom_bios_date(0xFFFF5);                          /* F000:FFF5 "MM/DD/YY" */
+    pstore8(0xFFFFD, 0x00);                          /* checksum-заглушка    */
+    pstore8(0xFFFFE, 0xFC);                          /* model byte: IBM AT   */
+    pstore8(0xFFFFF, 0x01);                          /* submodel/revision    */
+
+/* --- Канонические IBM PC/AT точки входа BIOS в F000 ---------------------
+ * Для классических BIOS-векторов сохраняем настоящие F000:xxxx entry points:
+ * программы с TF/INT 1 (Norton Utilities и т.п.) ожидают увидеть ROM BIOS,
+ * прежде чем передать управление оригинальному обработчику.  Каждый entry
+ * делает JMP FAR на обычный guest-visible native escape-stub F000:Cxxx; уже
+ * там 0F FF <id> передаёт управление native_bios_dispatch().
+ *
+ * Старого специального окна FFE00-FFEFF больше нет.  FFEFF остаётся
+ * отдельным callback sentinel: в нём лежит 0F FF FF, а bios_FFh различает
+ * вложенные callback-и по логическому CS:IP.  Ранее перенесённые INT 08h/1Ah
+ * пока оставлены на FDA5h/FD6Eh: для этого исправления менять их не требуется.
+ *
+ * INT 19h (E05Bh) намеренно пропущен: смещение занято ROM-identity
+ * строками выше. INT 1Ch остаётся FFF0:0006 (каноничный F000:FF53 занят
+ * DPTE-таблицами по FFF50-FFF6F). */
+    {
+        static const struct { uint8_t intno; uint16_t off; } rom_entry[] = {
+            { 0x05, 0xFF54 },   /* print screen                    */
+            { 0x08, 0xFEA5 },   /* IRQ0 timer                      */
+            { 0x09, 0xE987 },   /* IRQ1 keyboard                   */
+            { 0x10, 0xF065 },   /* video                           */
+            { 0x11, 0xF84D },   /* equipment list                  */
+            { 0x12, 0xF841 },   /* memory size                     */
+            { 0x13, 0xE3FE },   /* disk                            */
+            { 0x14, 0xE739 },   /* serial                          */
+            { 0x15, 0xF859 },   /* system services                 */
+            { 0x16, 0xE82E },   /* keyboard services               */
+            { 0x17, 0xEFD2 },   /* printer (сразу за DPT @ EFC7)   */
+            { 0x1A, 0xFE6E },   /* time of day                     */
+        };
+        for (unsigned i = 0; i < sizeof(rom_entry)/sizeof(rom_entry[0]); ++i) {
+            uint32_t phys = 0xF0000u + rom_entry[i].off;
+            pstore8 (phys,     0xEA);              /* JMP FAR native stub */
+            pstore16(phys + 1, NATIVE_BIOS_STUB_OFF_FOR(rom_entry[i].intno));
+            pstore16(phys + 3, NATIVE_BIOS_STUB_SEG);
+            pstore16(rom_entry[i].intno * 4,     rom_entry[i].off);
+            pstore16(rom_entry[i].intno * 4 + 2, 0xF000);
+        }
+    }
+/* Дефолтный обработчик INT 24h ядра DOS: kernel.asm _int24_handler =
+ * "mov al,FAIL; iret" (FAIL=03h). Байты живут в fake-ROM, вектор ставит
+ * init_vectors() ядра (fdos/kernel.c) - как в оригинале, где байты лежат
+ * в образе ядра. FFF44-FFF46 свободны (FFF50+ занят DPTE). */
+    pstore8(0xFFF44, 0xB0);   /* MOV AL, imm8 */
+    pstore8(0xFFF45, 0x03);   /* FAIL         */
+    pstore8(0xFFF46, 0xCF);   /* IRET         */
+
+   /* INT 33h: сброс состояния + инициализация 8042/мыши через порты.
+    * Делать ПОСЛЕ инициализации PIC (выше в bios_post), иначе IRQ12 замаскирован. */
+    bios_33h_install(pc->cpu, pc->mouse_enabled);
+
+/* 1 = печатать в POST дамп ключевых полей (проверка, что патч реально в прошивке) */
+#if NATIVE_POST_SELFTEST
+    /* Печатается сразу после VGA-баннера. */
+    {
+        char cp[17];
+        for (int i = 0; i < 16; ++i) {
+            uint8_t c = pload8(0xFE000 + i);
+            cp[i] = (c >= 32 && c < 127) ? (char)c : '.';
+        }
+        cp[16] = 0;
+        bios_printf(pc->cpu,
+            "\n\nPOST: F000:E000=[%s] 40:96=%02X 40:08=%04X 40:0A=%04X EQ=%04X\n",
+            cp, pload8(0x496), pload16(0x408), pload16(0x40A), pload16(0x410));
+        bios_printf(pc->cpu,
+            "POST: CMOS 10=%02X 12=%02X 14=%02X 2E=%02X 2F=%02X  HD=%u\n",
+            cmos_read(pc->cpu, 0x10), cmos_read(pc->cpu, 0x12),
+            cmos_read(pc->cpu, 0x14), cmos_read(pc->cpu, 0x2E),
+            cmos_read(pc->cpu, 0x2F), (unsigned)pload8(0x475));
+    }
+#endif
+
+//	bios_19h(pc->cpu);
+    pstore8(0xFFFF0, 0xCD); // INT 19h - bootstrap
+    pstore8(0xFFFF1, 0x19);
+}
+
 void load_bios_and_reset(PC *pc)
 {
 	int bios_size = 0;
@@ -1224,6 +2001,8 @@ void load_bios_and_reset(PC *pc)
 		} else if (pc->vga_bios && pc->vga_bios[0]) {
 			printf("Skipping VGA BIOS - main BIOS overlaps at 0x%x\n", bios_start);
 		}
+	} else {
+		bios_post(pc);
 	}
 	sn76489_reset();
 	cpu_reset(pc->cpu);

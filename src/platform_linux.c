@@ -7,7 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/utsname.h>
 #include <time.h>
+#include <unistd.h>
 
 /*
  * Linux/ARM64 platform HAL: the counterpart of the HAL functions that
@@ -57,6 +59,57 @@ void platform_free_guest_ram(void)
 		munmap(guest_ram_base, guest_ram_mapping);
 	guest_ram_base = NULL;
 	guest_ram_mapping = 0;
+}
+
+/*
+ * Host identity shown by the native BIOS (murm386 shows the RP2350 package,
+ * clock and core voltage there).
+ */
+static size_t read_text_file(const char *path, char *buf, size_t size)
+{
+	FILE *f = fopen(path, "r");
+	if (!f)
+		return 0;
+	size_t n = fread(buf, 1, size - 1, f);
+	fclose(f);
+	buf[n] = '\0';
+	/* device-tree strings are NUL-terminated, sysfs values end in '\n' */
+	n = strcspn(buf, "\n");
+	buf[n] = '\0';
+	return n;
+}
+
+void platform_host_name(char *buf, size_t size)
+{
+	if (!size)
+		return;
+	if (read_text_file("/proc/device-tree/model", buf, size))
+		return;
+	struct utsname u;
+	if (uname(&u) == 0)
+		snprintf(buf, size, "%s", u.machine);
+	else
+		snprintf(buf, size, "Linux");
+}
+
+unsigned platform_cpu_mhz(void)
+{
+	char khz[24];
+	if (!read_text_file("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq",
+			    khz, sizeof(khz)) &&
+	    !read_text_file("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq",
+			    khz, sizeof(khz)))
+		return 0;
+	return (unsigned)(strtoul(khz, NULL, 10) / 1000u);
+}
+
+unsigned long platform_host_ram_mb(void)
+{
+	long pages = sysconf(_SC_PHYS_PAGES);
+	long page_size = sysconf(_SC_PAGESIZE);
+	if (pages <= 0 || page_size <= 0)
+		return 0;
+	return (unsigned long)(((uint64_t)pages * (uint64_t)page_size) >> 20);
 }
 
 /**

@@ -271,15 +271,6 @@ static bool int13_transfer_lba(CPU* cpu, const BiosDisk *d, uint32_t lba, uint16
 
 static uint8_t fdd_changed[2] = { 0, 0 };
 
-static bool int13_check_fdd_changed(CPU* cpu, uint8_t drive)
-{
-    if ((drive & 0x80) || drive >= 2 || !fdd_changed[drive])
-        return false;
-    fdd_changed[drive] = 0;
-    int13_set_status(cpu, drive, INT13_ST_ECHANGED);
-    return true;
-}
-
 /* Common CHS transfer path for AH=02h/03h/04h.
  * write=0, verify=0: read sectors to ES:BX
  * write=1, verify=0: write sectors from ES:BX

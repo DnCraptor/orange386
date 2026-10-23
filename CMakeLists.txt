@@ -28,7 +28,29 @@ add_executable(orange386
     src/video_profile.c
     src/i386.c
     src/fpu.c
+    # Native BIOS (bios=native), ported from murm386's RP2350 SeaBIOS port
     src/bios/dispatch.c
+    src/bios/bios_00h.c
+    src/bios/bios_05h.c
+    src/bios/bios_08h.c
+    src/bios/bios_09h.c
+    src/bios/bios_10h.c
+    src/bios/bios_11h.c
+    src/bios/bios_12h.c
+    src/bios/bios_13h.c
+    src/bios/bios_14h.c
+    src/bios/bios_15h.c
+    src/bios/bios_16h.c
+    src/bios/bios_17h.c
+    src/bios/bios_18h.c
+    src/bios/bios_19h.c
+    src/bios/bios_1Ah.c
+    src/bios/bios_33h.c
+    src/bios/bios_FFh.c
+    src/bios/bios_intcall.c
+    src/bios/bios_printf.c
+    src/font8x8.c
+    src/font8x14.c
 
     # Devices
     src/vga.c        # VGA emulation
@@ -75,6 +97,9 @@ target_compile_definitions(orange386 PRIVATE
     _POSIX_C_SOURCE=200809L
     _DEFAULT_SOURCE=1
     ORANGE386=1
+    # Native FreeDOS kernel (src/fdos) is not built yet: native BIOS boots
+    # guest media only.
+    NATIVE_DOS=0
     NO_PAGING=1
     VGA256=1
     I386_MODE=1

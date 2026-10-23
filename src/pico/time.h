@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <pthread.h>
+#include <time.h>
+#include <hardware/timer.h>
 
 /*
  * Linux host replacement for the Pico SDK repeating timers (<pico/time.h>).
@@ -29,5 +31,21 @@ struct repeating_timer {
 bool add_repeating_timer_us(int64_t delay_us, repeating_timer_callback_t callback,
 			    void *user_data, repeating_timer_t *out);
 bool cancel_repeating_timer(repeating_timer_t *timer);
+
+/* Busy-free sleeps of the calling thread (SDK: sleep_us / sleep_ms). */
+static inline void sleep_us(uint64_t us)
+{
+	struct timespec ts = {
+		.tv_sec = (time_t)(us / 1000000u),
+		.tv_nsec = (long)(us % 1000000u) * 1000L,
+	};
+	while (nanosleep(&ts, &ts) != 0)
+		;
+}
+
+static inline void sleep_ms(uint32_t ms)
+{
+	sleep_us((uint64_t)ms * 1000u);
+}
 
 #endif /* ORANGE386_PICO_TIME_H */

@@ -39,9 +39,11 @@ Keyboards and mice are grabbed exclusively while the emulator runs.
 
 `386/config.ini` uses the murm386 format: `[pc]` / `[386]` (`bios`, `vga_bios`, `fda`, `fdb`, `hda`..`hdd`, `cda`..`cdd`, `mem_size` in MiB, default 16), `[cpu]` (`gen`, `fpu`) and `[murm-286]` (sound devices, mouse options). Paths are resolved below the working directory, case-insensitively.
 
+`bios=native` (or an empty `bios=`) selects the built-in native BIOS instead of a ROM image: POST, BIOS data area and the INT 10h/13h/16h/1Ah/33h services run as host code. It boots the guest from A:, then C:, then a bootable CD.
+
 ## Not ported yet
 
-Native BIOS and native DOS (`bios=native`; choosing `[native]` in the Disk Manager makes the next start fail with a message), game controllers other than mouse-as-joystick and the numeric-keypad mouse.
+Native DOS (the built-in FreeDOS kernel that the native BIOS can boot instead of the guest's boot sector; the Disk Manager BOOT row has no effect yet), game controllers other than mouse-as-joystick and the numeric-keypad mouse.
 
 ## Limits
 

@@ -185,6 +185,7 @@ Bit(s)  Description     (Table 00463)
 static bool bios_15h_41h(CPU* cpu) {
     static int old = -1; // -1 means, we have no prev. state
     static u32 start_us = 0;
+    static u32 start_ticks = 0;
     uint16_t flags_on_stack = readw86((CPU_SS << 4) + CPU_SP + 4);
     u8 cond_type = CPU_AL;
     u8 wait4 = cond_type & 0b00000111;
@@ -198,11 +199,18 @@ static bool bios_15h_41h(CPU* cpu) {
     }
     bool res = true;
     if (!wait4) {
+        /* Condition 0 is "any external event": a hardware interrupt ends
+         * the wait.  IRQ0 is such an event and advances the BIOS tick count
+         * (40:6C), so the wait never outlasts one timer tick.  A change of
+         * the user byte/port also counts.  Without the tick check a probe
+         * with BL=0 (no timeout) never returns: DR-DOS IBMBIO issues
+         * AX=4100h BX=0 at boot to detect the function. */
         if (old == -1) {
             old = v;
             start_us = time_us_32();
+            start_ticks = pload32(0x46C);
         }
-        if (old != -1 && old != v) {
+        if (old != -1 && (old != v || pload32(0x46C) != start_ticks)) {
             old = -1; // cleanup saved value
             goto ok;
         }
