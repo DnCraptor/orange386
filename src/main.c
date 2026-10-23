@@ -97,13 +97,13 @@ static int load_bios_rom(const char *path)
         return -1;
     }
     long length = ftell(file);
-    if (length < 16 || length > 0x10000 || fseek(file, 0, SEEK_SET) != 0) {
-        fprintf(stderr, "BIOS image must be 16..65536 bytes: %s\\n", path);
+    if (length < 16 || length > 0x40000 || fseek(file, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "BIOS image must be 16..262144 bytes: %s\\n", path);
         fclose(file);
         return -1;
     }
     /* ROMs smaller than 64 KiB are mapped at the top of the first MiB. */
-    memset(guest_ram_base + 0xf0000, 0xff, 0x10000);
+    memset(guest_ram_base + 0xc0000, 0xff, 0x40000);
     size_t offset = 0x100000u - (size_t)length;
     size_t n = fread(guest_ram_base + offset, 1, (size_t)length, file);
     fclose(file);
@@ -213,17 +213,36 @@ static uint32_t find_crtc(int fd, drmModeRes *res, drmModeConnector *conn)
 
 int main(int argc, char **argv)
 {
+    const char *device = argc > 1 ? argv[1] : "/dev/dri/card0";
     const char *bios_path = NULL;
-    const char *device = "/dev/dri/card0";
-    if (argc > 1 && strcmp(argv[1], "--bios") == 0) {
-        if (argc < 3 || argc > 4) {
-            fprintf(stderr, "Usage: %s --bios rom.bin [/dev/dri/cardN]\\n", argv[0]);
-            return EXIT_FAILURE;
+    char bios_file[512];
+    FILE *conf = fopen("386/config.ini", "r");
+    if (conf) {
+        char line[512];
+        int pc_section = 0;
+        while (fgets(line, sizeof(line), conf)) {
+            char *s = line;
+            while (*s == ' ' || *s == '\t') ++s;
+            if (*s == '[') {
+                pc_section = !strncmp(s, "[pc]", 4) || !strncmp(s, "[386]", 5);
+                continue;
+            }
+            if (!pc_section || strncmp(s, "bios=", 5)) continue;
+            s += 5;
+            s[strcspn(s, "\r\n")] = 0;
+            if (*s && strcmp(s, "native")) {
+                if (strchr(s, '/') || strchr(s, '\\'))
+                    snprintf(bios_file, sizeof(bios_file), "%s", s);
+                else
+                    snprintf(bios_file, sizeof(bios_file), "386/%s", s);
+                bios_path = bios_file;
+            }
         }
-        bios_path = argv[2];
-        if (argc == 4) device = argv[3];
-    } else if (argc > 1) {
-        device = argv[1];
+        fclose(conf);
+    }
+    if (!bios_path) {
+        fprintf(stderr, "Native BIOS is not yet ported; set bios=bios.bin in 386/config.ini\n");
+        return EXIT_FAILURE;
     }
     int fd = open(device, O_RDWR | O_CLOEXEC);
     if (fd < 0) { perror(device); return EXIT_FAILURE; }
@@ -235,7 +254,7 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    if (bios_path && load_bios_rom(bios_path) != 0) {
+    if (load_bios_rom(bios_path) != 0) {
         free(guest_ram_base);
         guest_ram_base = NULL;
         close(fd);
@@ -294,15 +313,8 @@ int main(int argc, char **argv)
     changed = true;
     printf("DRM: %s, HDMI connector %u, %ux%u @ %u Hz\n", device,
            conn->connector_id, mode.hdisplay, mode.vdisplay, mode.vrefresh);
-    if (bios_path) {
-        puts("DRM framebuffer is provisional; VGA scanout is not connected yet.");
-        result = run_cpu(bios_path) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
-    } else {
-        puts("Eight color bars are displayed. Press Enter to restore the display.");
-        fflush(stdout);
-        (void)getchar();
-        result = EXIT_SUCCESS;
-    }
+    puts("DRM framebuffer is provisional; VGA scanout is not connected yet.");
+    result = run_cpu(bios_path) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 
 done:
     if (changed) {
