@@ -1,6 +1,6 @@
 #include "pc.h"
 #include "mem.h"
-#include "vga_text.h"
+#include "video_profile.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,8 +13,7 @@
  * Port dispatch and device construction follow murm386 one-to-one for every
  * device already brought over.  Devices that are not ported yet answer like
  * an empty ISA slot (reads 0xFF, writes ignored), exactly as murm386 does for
- * disabled devices.  VGA ports are temporarily routed to the bootstrap text
- * renderer (vga_text.c) until vga.c is ported.
+ * disabled devices.
  */
 
 unsigned long phys_mem_size = 16ul << 20;
@@ -61,7 +60,8 @@ static __always_inline u8 _pc_io_read(void *o, int addr)
 	case 0x3d4: case 0x3d5: case 0x3d6: case 0x3d7:
 	case 0x3d8: case 0x3d9: case 0x3da: case 0x3db:
 	case 0x3dc: case 0x3dd: case 0x3de: case 0x3df:
-		return vga_text_io_read((uint16_t)addr);
+		val = vga_ioport_read(pc->vga, addr);
+		return val;
 	case 0x92:
 		return pc->port92 | 0x02;
 	case 0x60:
@@ -105,6 +105,9 @@ static u16 pc_io_read16(void *o, int addr)
 	u16 val;
 
 	switch(addr) {
+	case 0x1ce: case 0x1cf:
+		val = vbe_read(pc->vga, addr - 0x1ce);
+		return val;
 	case 0xcf8:
 		val = i440fx_read_addr(pc->i440fx, 0, 1);
 		return val;
@@ -172,7 +175,7 @@ static void pc_io_write(void *o, int addr, u8 val)
 	case 0x3d4: case 0x3d5: case 0x3d6: case 0x3d7:
 	case 0x3d8: case 0x3d9: case 0x3da: case 0x3db:
 	case 0x3dc: case 0x3dd: case 0x3de: case 0x3df:
-		vga_text_io_write((uint16_t)addr, val);
+		vga_ioport_write(pc->vga, addr, val);
 		return;
 	case 0x402:
 		return;
@@ -237,8 +240,11 @@ static void pc_io_write16(void *o, int addr, u16 val)
 	case 0x3d4: case 0x3d5: case 0x3d6: case 0x3d7:
 	case 0x3d8: case 0x3d9: case 0x3da: case 0x3db:
 	case 0x3dc: case 0x3dd: case 0x3de:
-		pc_io_write(o, addr, val & 0xff);
-		pc_io_write(o, addr + 1, (val >> 8) & 0xff);
+		vga_ioport_write(pc->vga, addr, val & 0xff);
+		vga_ioport_write(pc->vga, addr + 1, (val >> 8) & 0xff);
+		return;
+	case 0x1ce: case 0x1cf:
+		vbe_write(pc->vga, addr - 0x1ce, val);
 		return;
 	case 0xcfc: case 0xcfe:
 		i440fx_write_data(pc->i440fx, addr - 0xcfc, val, 1);
@@ -269,11 +275,21 @@ static int pc_io_write_string(void *o, int addr, uint32_t buf, int size, int cou
 	return 0;
 }
 
+void pc_vga_step(void *o)
+{
+	PC *pc = o;
+	int refresh = vga_step(pc->vga);
+	if (refresh) {
+		vga_refresh(pc->vga, pc->redraw, pc->redraw_data, 0);
+	}
+}
+
 static uint32_t pc_last_device_service;
 
 static void pc_service_impl(PC *pc)
 {
 	pc_last_device_service = get_uticks();
+	int refresh = vga_step(pc->vga);
 
 	/*
 	 * RP2350 drives the PIT and RTC interrupt sources from a 44.1 kHz core0
@@ -289,6 +305,13 @@ static void pc_service_impl(PC *pc)
 	kbd_step(pc->i8042);
 
 	if (pc->poll) pc->poll(pc->redraw_data);
+
+	if (refresh && pc->redraw) {
+		vga_refresh(pc->vga, pc->redraw, pc->redraw_data,
+			    pc->full_update != 0);
+		if (pc->full_update == 2)
+			pc->full_update = 0;
+	}
 }
 
 void pc_service(PC *pc)
@@ -327,6 +350,104 @@ static void set_irq(void *o, int irq, int level)
 	return i8259_set_irq(s, irq, level);
 }
 
+static void set_pci_vga_bar(void *opaque, int bar_num, uint32_t addr, bool enabled)
+{
+	PC *pc = opaque;
+	if (enabled)
+		pc->pci_vga_ram_addr = addr;
+	else
+		pc->pci_vga_ram_addr = -1;
+}
+
+u8 iomem_read8(void *iomem, uword addr)
+{
+	PC *pc = iomem;
+	uword vga_addr2 = pc->pci_vga_ram_addr;
+	if (addr >= vga_addr2) {
+		addr -= vga_addr2;
+		if (addr < (uword)pc->vga_mem_size)
+			return pc->vga_mem[addr];
+		else
+			return 0;
+	}
+	return vga_mem_read(pc->vga, addr - 0xa0000);
+}
+
+void iomem_write8(void *iomem, uword addr, u8 val)
+{
+	PC *pc = iomem;
+	uword vga_addr2 = pc->pci_vga_ram_addr;
+	if (addr >= vga_addr2) {
+		addr -= vga_addr2;
+		if (addr < (uword)pc->vga_mem_size)
+			pc->vga_mem[addr] = val;
+		return;
+	}
+	vga_mem_write(pc->vga, addr - 0xa0000, val);
+}
+
+u16 iomem_read16(void *iomem, uword addr)
+{
+	return iomem_read8(iomem, addr) |
+		((u16) iomem_read8(iomem, addr + 1) << 8);
+}
+
+void iomem_write16(void *iomem, uword addr, u16 val)
+{
+	PC *pc = iomem;
+	// fast path for vga ram
+	uword vga_addr2 = pc->pci_vga_ram_addr;
+	if (addr >= vga_addr2) {
+		addr -= vga_addr2;
+		if (addr + 1 < (uword)pc->vga_mem_size)
+			memcpy(&pc->vga_mem[addr], &val, sizeof(val));
+		return;
+	}
+	vga_mem_write16(pc->vga, addr - 0xa0000, val);
+}
+
+u32 iomem_read32(void *iomem, uword addr)
+{
+	return iomem_read16(iomem, addr) |
+		((u32) iomem_read16(iomem, addr + 2) << 16);
+}
+
+void iomem_write32(void *iomem, uword addr, u32 val)
+{
+	PC *pc = iomem;
+	// fast path for vga ram
+	uword vga_addr2 = pc->pci_vga_ram_addr;
+	if (addr >= vga_addr2) {
+		addr -= vga_addr2;
+		if (addr + 3 < (uword)pc->vga_mem_size)
+			memcpy(&pc->vga_mem[addr], &val, sizeof(val));
+		return;
+	}
+	vga_mem_write32(pc->vga, addr - 0xa0000, val);
+}
+
+// Новая версия принимает host-pointer напрямую
+bool iomem_write_string_ptr(void *iomem, uint32_t addr, const uint8_t *buf, int len)
+{
+	PC *pc = iomem;
+	uint32_t vga_addr2 = pc->pci_vga_ram_addr;
+	if (addr >= vga_addr2) {
+		addr -= vga_addr2;
+		if (addr + len < (uint32_t)pc->vga_mem_size) {
+			memcpy(pc->vga_mem + addr, buf, len);
+			return true;
+		}
+		return false;
+	}
+	return vga_mem_write_string(pc->vga, addr - 0xa0000, (uint8_t*)buf, len);
+}
+
+// Старая версия теперь через новую
+bool iomem_write_string(void *iomem, uint32_t addr, uint32_t buf, int len)
+{
+	return iomem_write_string_ptr(iomem, addr, PC_RAM + buf, len);
+}
+
 static void pc_reset_request(void *p)
 {
 	PC *pc = p;
@@ -336,7 +457,6 @@ static void pc_reset_request(void *p)
 PC *pc_new(SimpleFBDrawFunc *redraw, void (*poll)(void *), void *redraw_data,
 	   u8 *fb, PCConfig *conf)
 {
-	(void)fb;
 	PC *pc = calloc(1, sizeof(PC));
 	g_pc = pc;
 	CPU_CB *cb = NULL;
@@ -392,6 +512,15 @@ PC *pc_new(SimpleFBDrawFunc *redraw, void (*poll)(void *), void *redraw_data,
 	cb->io_write_string = pc_io_write_string;
 
 	pc->boot_start_time = 0;
+
+	pc->vga_mem_size = (int)video_profile_vram_size();
+	pc->vga_mem = pcmalloc(pc->vga_mem_size);
+	memset(pc->vga_mem, 0, pc->vga_mem_size);
+	pc->vga = vga_init(pc->vga_mem, pc->vga_mem_size,
+			   fb, conf->width, conf->height);
+	vga_set_force_8dm(pc->vga, conf->vga_force_8dm);
+	pc->pci_vga = vga_pci_init(pc->vga, pc->pcibus, pc, set_pci_vga_bar);
+	pc->pci_vga_ram_addr = -1;
 
 	cb->iomem = pc;
 

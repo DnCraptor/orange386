@@ -117,3 +117,32 @@ int load_rom(void *phys_mem, const char *file, uword addr, int backward)
 	       (unsigned long)(backward ? addr - size : addr));
 	return (int)size;
 }
+
+/*
+ * Memory helpers that murm386 keeps in SRAM (dos_api.c) so hot native paths
+ * never execute from XIP flash.  On the host they are ordinary functions with
+ * the same contracts: dos_api_memcpy copies forward, so an overlapping copy to
+ * a higher address replicates the source like REP MOVSB, as the RP2350
+ * byte/word loop does for such ranges.
+ */
+void *dos_api_memcpy(void *dst, const void *src, size_t len)
+{
+	uint8_t *d = (uint8_t *)dst;
+	const uint8_t *s = (const uint8_t *)src;
+	if (d > s && d < s + len) {
+		while (len--)
+			*d++ = *s++;
+		return dst;
+	}
+	return memmove(dst, src, len);
+}
+
+const void *dos_api_memchr(const void *src, int value, size_t len)
+{
+	return memchr(src, value, len);
+}
+
+void *nf_memset(void *ptr, int value, size_t len)
+{
+	return memset(ptr, value, len);
+}

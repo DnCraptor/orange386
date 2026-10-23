@@ -9,6 +9,7 @@
 #include "i386.h"
 #include "i8259.h"
 #include "i8254.h"
+#include "vga.h"
 #include "i8042.h"
 #include "misc.h"
 #include "pcspk.h"
@@ -29,14 +30,15 @@ uint32_t get_uticks();
 void *pcmalloc(long size);
 int load_rom(void *phys_mem, const char *file, uword addr, int backward);
 
-typedef void SimpleFBDrawFunc(void *opaque, int x, int y, int w, int h);
-
 typedef struct PC {
 	CPU *cpu;
 	PicState2 *pic;
 	PITState *pit;
 	U8250 *serial;
 	CMOS *cmos;
+	VGAState *vga;
+	char *vga_mem;
+	int vga_mem_size;
 	int64_t boot_start_time;
 
 	SimpleFBDrawFunc *redraw;
@@ -53,6 +55,8 @@ typedef struct PC {
 
 	I440FXState *i440fx;
 	PCIBus *pcibus;
+	PCIDevice *pci_vga;
+	uword pci_vga_ram_addr;
 
 	const char *bios;
 	const char *vga_bios;
@@ -89,6 +93,7 @@ typedef struct {
 PC *pc_new(SimpleFBDrawFunc *redraw, void (*poll)(void *), void *redraw_data,
 	   u8 *fb, PCConfig *conf);
 
+void pc_vga_step(void *o);
 void pc_step(PC *pc, size_t max_ops);
 /* Service emulated devices without executing guest CPU instructions. */
 void pc_service(PC *pc);

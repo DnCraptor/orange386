@@ -13,12 +13,16 @@ pkg_check_modules(LIBDRM REQUIRED IMPORTED_TARGET libdrm)
 add_executable(orange386
     src/main.c
     src/platform_linux.c
+    src/video_drm.c
+    src/vga_hw_linux.c
     src/pc.c
-    src/vga_text.c
+    src/video_profile.c
     src/i386.c
     src/fpu.c
-    src/iomem.c
     src/bios/dispatch.c
+
+    # Devices
+    src/vga.c        # VGA emulation
 
     # Peripheral chips
     src/i8042.c      # Keyboard controller
@@ -31,7 +35,12 @@ add_executable(orange386
     # Configuration
     src/ini.c
 )
-target_link_libraries(orange386 PRIVATE PkgConfig::LIBDRM m)
+# vga.c keeps murm386's software framebuffer renderer for non-scanout hosts;
+# like the RP2350 build, this port scans out through vga_hw_linux.c instead.
+set_source_files_properties(src/vga.c PROPERTIES COMPILE_OPTIONS -Wno-unused-function)
+
+find_package(Threads REQUIRED)
+target_link_libraries(orange386 PRIVATE PkgConfig::LIBDRM Threads::Threads m)
 target_compile_options(orange386 PRIVATE
     -Wall
     -Wextra
@@ -43,7 +52,9 @@ target_include_directories(orange386 PUBLIC src)
 target_compile_definitions(orange386 PRIVATE
     _POSIX_C_SOURCE=200809L
     _DEFAULT_SOURCE=1
+    ORANGE386=1
     NO_PAGING=1
+    VGA256=1
     I386_MODE=1
     EMU_CPU_GEN=3
     # Data directory (BIOS images, config.ini, disk images), relative to
