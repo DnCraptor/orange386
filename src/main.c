@@ -381,8 +381,10 @@ int main(int argc, char **argv)
     changed = true;
     printf("DRM: %s, HDMI connector %u, %ux%u @ %u Hz\n", device,
            conn->connector_id, mode.hdisplay, mode.vdisplay, mode.vrefresh);
-    puts("DRM framebuffer is provisional; VGA scanout is not connected yet.");
-    result = run_cpu(bios_path) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    puts("VGA text scanout enabled (bootstrap: B8000, 80x25 only).");
+    result = run_cpu(bios_path, b.pixels, b.pitch,
+                     mode.hdisplay, mode.vdisplay) == 0
+                     ? EXIT_SUCCESS : EXIT_FAILURE;
 
 done:
     if (changed) {
