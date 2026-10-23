@@ -211,6 +211,66 @@ static uint32_t find_crtc(int fd, drmModeRes *res, drmModeConnector *conn)
     return 0;
 }
 
+/*
+ * Select a physical HDMI mode for an unscaled VGA raster.
+ * The raster is always enlarged by an integer factor and centered;
+ * unused pixels are black.  Never crop or downscale.
+ *
+ * This is deliberately independent of the VGA renderer: when the guest
+ * changes video modes, call it again with the new source dimensions.
+ */
+struct video_placement {
+    drmModeModeInfo mode;
+    uint32_t scale, x, y, width, height;
+};
+
+static bool select_video_mode(const drmModeConnector *conn,
+                              uint32_t src_w, uint32_t src_h,
+                              struct video_placement *out)
+{
+    if (!src_w || !src_h) return false;
+    bool found = false;
+    uint64_t best_waste = UINT64_MAX;
+    uint32_t best_scale = 0, best_refresh_error = UINT32_MAX;
+    for (int i = 0; i < conn->count_modes; ++i) {
+        const drmModeModeInfo *m = &conn->modes[i];
+        uint32_t scale_w = m->hdisplay / src_w;
+        uint32_t scale_h = m->vdisplay / src_h;
+        uint32_t scale = scale_w < scale_h ? scale_w : scale_h;
+        if (!scale) continue;
+
+        uint32_t w = src_w * scale, h = src_h * scale;
+        uint64_t area = (uint64_t)m->hdisplay * m->vdisplay;
+        uint64_t waste = area - (uint64_t)w * h;
+        /*
+         * Compare unused-area fractions, not absolute pixel counts.
+         * An exact match wins; among equally filled modes, prefer the
+         * larger integer scale.  Prefer refresh close to 60 Hz last.
+         */
+        uint32_t refresh = m->vrefresh;
+        uint32_t refresh_error = refresh > 60 ? refresh - 60 : 60 - refresh;
+        bool better = !found ||
+            waste * (uint64_t)out->mode.hdisplay * out->mode.vdisplay <
+                best_waste * area ||
+            (waste * (uint64_t)out->mode.hdisplay * out->mode.vdisplay ==
+                best_waste * area &&
+             (scale > best_scale ||
+              (scale == best_scale && refresh_error < best_refresh_error)));
+        if (!better) continue;
+        out->mode = *m;
+        out->scale = scale;
+        out->width = w;
+        out->height = h;
+        out->x = (m->hdisplay - w) / 2;
+        out->y = (m->vdisplay - h) / 2;
+        best_waste = waste;
+        best_scale = scale;
+        best_refresh_error = refresh_error;
+        found = true;
+    }
+    return found;
+}
+
 int main(int argc, char **argv)
 {
     const char *device = argc > 1 ? argv[1] : "/dev/dri/card0";
@@ -299,9 +359,17 @@ int main(int argc, char **argv)
     old = drmModeGetCrtc(fd, crtc_id);
     if (!old) { fprintf(stderr, "Cannot read original CRTC\n"); goto done; }
 
-    drmModeModeInfo mode = conn->modes[0];
-    for (int i = 0; i < conn->count_modes; ++i)
-        if (conn->modes[i].type & DRM_MODE_TYPE_PREFERRED) { mode = conn->modes[i]; break; }
+    /* Initial VGA text raster (80 columns x 9 dots, 25 rows x 16 dots).
+     * The VGA renderer will update this when the guest changes modes. */
+    struct video_placement placement;
+    if (!select_video_mode(conn, 720, 400, &placement)) {
+        fprintf(stderr, "No HDMI mode fits the 720x400 VGA raster\n");
+        goto done;
+    }
+    drmModeModeInfo mode = placement.mode;
+    printf("VGA placement: 720x400 -> %ux%u, scale %ux, offset (%u,%u)\n",
+           placement.width, placement.height, placement.scale,
+           placement.x, placement.y);
 
     if (create_buffer(fd, mode.hdisplay, mode.vdisplay, &b)) {
         fprintf(stderr, "Cannot create dumb framebuffer: %s\n", strerror(errno)); goto done;
