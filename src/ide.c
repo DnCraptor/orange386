@@ -509,15 +509,6 @@ static void ide_atapi_cmd_error(IDEState *s, int sense_key, int asc)
     ide_set_irq(s);
 }
 
-static void ide_atapi_cmd_check_status(IDEState *s)
-{
-    atapi_tlog("[%d]  -> CHECK_STATUS (UA blocked)\r\n", time_us_32());
-    s->error   = MC_ERR | (SENSE_UNIT_ATTENTION << 4);
-    s->status  = ERR_STAT;
-    s->nsector = 0;
-    ide_set_irq(s);
-}
-
 static int64_t ide_nb_sectors(IDEState *s)
 {
     if (!s->fp) return 0;
@@ -632,16 +623,6 @@ static inline void cpu_to_ube32(uint8_t *buf, unsigned int val)
 static inline int ube16_to_cpu(const uint8_t *buf) { return (buf[0] << 8) | buf[1]; }
 static inline int ube32_to_cpu(const uint8_t *buf) { return (buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3]; }
 
-static void cpu_to_be32wu(uint32_t *p, uint32_t v)
-{
-    uint8_t *b = (uint8_t *)p;
-    b[0]=v>>24; b[1]=v>>16; b[2]=v>>8; b[3]=v;
-}
-static void cpu_to_be16wu(uint16_t *p, uint16_t v)
-{
-    uint8_t *b = (uint8_t *)p;
-    b[0]=v>>8; b[1]=v;
-}
 static void lba_to_msf(uint8_t *buf, int lba)
 {
     lba += 150;
@@ -1602,7 +1583,7 @@ int ide_data_write_string(void *opaque, uint32_t addr, int size, int count)
         for (int i = 0; i < len; i += 512) {
             UINT l = len - i;
             if (l > 512) l = 512;
-            for (int j = 0; j < l; ++j) {
+            for (UINT j = 0; j < l; ++j) {
                 buf[j] = pload8(addr + i + j);
             }
             f_write(s->fp, buf, l, &bw);
@@ -1632,7 +1613,7 @@ int ide_data_read_string(void *opaque, uint32_t addr, int size, int count)
             UINT l = len - i;
             if (l > 512) l = 512;
             f_read(s->fp, buf, l, &br);
-            for (int j = 0; j < l; ++j) {
+            for (UINT j = 0; j < l; ++j) {
                 pstore8(addr + i + j, buf[j]);
             }
         }

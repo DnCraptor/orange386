@@ -5574,7 +5574,8 @@ CPU* cpu_new(int gen, CPU_CB **cb)
 void cpui386_set_verbose() // for debugging
 {
 	verbose = true;
-	freopen("/tmp/xlog", "w", stderr);
+	if (!freopen("/tmp/xlog", "w", stderr))
+		return;  /* stderr stays where it was */
 	setvbuf(stderr, NULL, _IOLBF, 0);
 }
 #endif

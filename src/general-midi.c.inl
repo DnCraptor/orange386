@@ -395,6 +395,7 @@ static INLINE void parse_midi(const midi_command_t *message) {
                     }
                 }
             } // else do note off
+            __attribute__((fallthrough));
         case 0x8: // Note OFF
             /* Probably we should
              * Find the first and last entry in the voices list with matching channel, key and look up the smallest play position

@@ -68,39 +68,6 @@ void disk_set_fdc_mediachange_callback(void (*cb)(int drive)) { disk_fdc_mediach
 static void (*disk_cdrom_change_cb)(int drive, const char *filename, int was_present) = NULL;
 void disk_set_cdrom_change_callback(void (*cb)(int drive, const char *filename, int was_present)) { disk_cdrom_change_cb = cb; }
 
-/* Установить FDPT (Fixed Disk Parameter Table) и INT 41h/46h векторы.
- * Вызывается при каждом INT 13h для HDD — перезаписывает то что мог
- * поставить SeaBIOS во время boot.
- * Раскладка IBM AT BIOS: +00 word cyls, +02 byte heads,
- * +04..07 precomp (0xFFFF), +09 control, +0D word landing zone, +0F byte sects. */
-static void install_fdpt(void) {
-    /* Всегда перезаписываем — SeaBIOS может восстановить свои векторы */
-#define FDPT(base, c, h, s) do { \
-    uint16_t _c=(c); uint8_t _h=(h),_s=(s),_ctrl=(_h>8)?0x08:0x00; \
-    pstore8((base)+0x00,_c&0xFF); pstore8((base)+0x01,_c>>8); \
-    pstore8((base)+0x02,_h);      pstore8((base)+0x03,0); \
-    pstore8((base)+0x04,0xFF);    pstore8((base)+0x05,0xFF); /* reduced write */ \
-    pstore8((base)+0x06,0xFF);    pstore8((base)+0x07,0xFF); /* write precomp */ \
-    pstore8((base)+0x08,0);       pstore8((base)+0x09,_ctrl); \
-    pstore8((base)+0x0A,0);       pstore8((base)+0x0B,0); \
-    pstore8((base)+0x0C,0); \
-    pstore8((base)+0x0D,_c&0xFF); pstore8((base)+0x0E,_c>>8); /* landing zone */ \
-    pstore8((base)+0x0F,_s); /* sectors per track */ \
-} while(0)
-    if (ata[0].name) {
-        FDPT(0x522, ata[0].cyls, ata[0].heads, ata[0].sects);
-        pstore8(0x104,0x22); pstore8(0x105,0x05);
-        pstore8(0x106,0x00); pstore8(0x107,0x00);
-    }
-    if (ata[1].name) {
-        FDPT(0x532, ata[1].cyls, ata[1].heads, ata[1].sects);
-        pstore8(0x118,0x32); pstore8(0x119,0x05);
-        pstore8(0x11A,0x00); pstore8(0x11B,0x00);
-    }
-    // TODO: ata[2,3]
-#undef FDPT
-}
-
 static void update_floppy_cmos(void) {
     if (!disk_cmos_update_cb) return;
     uint8_t ta = fdd[0].drive_type;

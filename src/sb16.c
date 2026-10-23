@@ -1143,13 +1143,13 @@ void sb16_mixer_write_datab(void *opaque, uint32_t nport, uint32_t val)
 
     case 0x81:
         {
-            int dma, hdma;
+            uint32_t dma, hdma;
 
-            dma = __builtin_ctz (val & 0xf);
-            hdma = __builtin_ctz (val & 0xf0);
+            dma = (uint32_t)__builtin_ctz (val & 0xf);
+            hdma = (uint32_t)__builtin_ctz (val & 0xf0);
             if (dma != s->dma || hdma != s->hdma) {
                 qemu_log_mask(LOG_GUEST_ERROR, "attempt to change DMA 8bit"
-                              " %d(%d), 16bit %d(%d) (val=%#x)\n", dma, s->dma,
+                              " %u(%u), 16bit %u(%u) (val=%#x)\n", dma, s->dma,
                               hdma, s->hdma, val);
             }
 #if 0
@@ -1194,7 +1194,7 @@ uint32_t sb16_mixer_read(void *opaque, uint32_t nport)
 static int write_audio (SB16State *s, int nchan, int dma_pos,
                         int dma_len, int len)
 {
-    IsaDma *isa_dma = nchan == s->dma ? s->isa_dma : s->isa_hdma;
+    IsaDma *isa_dma = (uint32_t)nchan == s->dma ? s->isa_dma : s->isa_hdma;
 
     int temp, net;
 #if defined(BUILD_ESP32) || defined(RP2350_BUILD) || defined(ORANGE386)
@@ -1223,7 +1223,9 @@ static int write_audio (SB16State *s, int nchan, int dma_pos,
         unsigned int len = AUDIO_BUF_LEN - (s->audio_q - s->audio_p);
         if (len > AUDIO_BUF_LEN)
             len = 0;
-        if (copied < len)
+        if (copied < 0)
+            copied = 0;
+        if ((unsigned int)copied < len)
             len = copied;
         if (len) {
             unsigned int q = s->audio_q % AUDIO_BUF_LEN;
@@ -1322,16 +1324,6 @@ static int SB_read_DMA (void *opaque, int nchan, int dma_pos, int dma_len)
     }
 
     return dma_pos;
-}
-
-static int gcd(int a, int b)
-{
-    while (b != 0) {
-        int temp = b;
-        b = a % b;
-        a = temp;
-    }
-    return a;
 }
 
 // Optimized Resamplers using fixed-point stepping (eliminates large loops for dirty frequencies)

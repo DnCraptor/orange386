@@ -65,6 +65,14 @@ inline static int after_eq(uint32_t a, uint32_t b)
     return (a - b) < (1u << 31);
 }
 
+/* The software framebuffer renderer (text/graphic refresh into fb_dev) is
+ * used only by hosts without a scanout driver.  RP2350 (vga_hw.c / hdmi.c)
+ * and orange386 (vga_hw_linux.c) read VRAM and registers directly. */
+#if !defined(RP2350_BUILD) && !defined(ORANGE386)
+#define VGA_SOFT_RENDER 1
+#endif
+
+#if VGA_SOFT_RENDER
 #if BPP == 32
 static void __not_in_flash_func(vga_draw_glyph8)(uint8_t *d, int linesize,
                             const uint8_t *font_ptr, int h,
@@ -379,6 +387,7 @@ static int update_palette16(VGAState *s, uint32_t *palette)
 #else
 #error "bad bpp"
 #endif
+#endif /* VGA_SOFT_RENDER */
 
 /* VGA CRT controller register indices */
 #define VGA_CRTC_H_TOTAL        0
@@ -649,6 +658,7 @@ static void vbe_update_vgaregs(VGAState *s)
     s->cr[VGA_CRTC_MAX_SCAN] &= ~0x9f; /* no double scan */
 }
 
+#if VGA_SOFT_RENDER
 /* the text refresh is just for debugging and initial boot message, so
    it is very incomplete */
 static void vga_text_refresh(VGAState *s,
@@ -1208,6 +1218,7 @@ static int __not_in_flash_func(vga_update_retrace)(VGAState *s)
     }
     return ret;
 }
+#endif /* VGA_SOFT_RENDER */
 
 int __scratch_x("vga_step") vga_step(VGAState *s)
 {
@@ -1257,14 +1268,15 @@ void __not_in_flash_func(vga_refresh)(VGAState *s,
         s->graphic_mode = graphic_mode;
         full_update = 1;
         s->cursor_blink_time = get_uticks();
-#if !defined(RP2350_BUILD) && !defined(ORANGE386)
+#if VGA_SOFT_RENDER
         simplefb_clear(fb_dev, redraw_func, opaque);
 #endif
     }
 
-#if defined(RP2350_BUILD) || defined(ORANGE386)
+#if !VGA_SOFT_RENDER
     // On RP2350, skip software framebuffer rendering - use hardware VGA
     // Just call the redraw callback to notify mode changes
+    (void)full_update;  /* consumed only by the software renderer */
     if (redraw_func) {
         redraw_func(opaque, 0, 0, fb_dev->width, fb_dev->height);
     }
@@ -2141,7 +2153,7 @@ PCIDevice *vga_pci_init(VGAState *s, PCIBus *bus,
 
     uint32_t bar_size;
     bar_size = 1;
-    while (bar_size < s->vga_ram_size)
+    while (bar_size < (uint32_t)s->vga_ram_size)
         bar_size <<= 1;
     pci_register_bar(d, 0, bar_size, PCI_ADDRESS_SPACE_MEM, o, set_bar);
     return d;

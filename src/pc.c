@@ -131,8 +131,8 @@ static int emulink_data_read(PC *pc, uint32_t addr, int size, int count)
             UINT l = len - i;
             if (l > 512) l = 512;
             FRESULT fr = f_read(fil, buf, l, &br);
-			if (fr != FR_OK || (int)br != l) goto err;
-            for (int j = 0; j < l; ++j) {
+			if (fr != FR_OK || br != l) goto err;
+            for (UINT j = 0; j < l; ++j) {
                 pstore8(addr + i + j, buf[j]);
             }
         }
@@ -163,11 +163,11 @@ static int emulink_data_write(PC *pc, uint32_t addr, int size, int count)
         for (int i = 0; i < len; i += 512) {
             UINT l = len - i;
             if (l > 512) l = 512;
-            for (int j = 0; j < l; ++j) {
+            for (UINT j = 0; j < l; ++j) {
                 buf[j] = pload8(addr + i + j);
             }
             FRESULT fr = f_write(fil, buf, l, &bw);
-			if (fr != FR_OK || (int)bw != l) goto err;
+			if (fr != FR_OK || bw != l) goto err;
         }
 		pc->emulink.dataleft -= len;
 		if (pc->emulink.dataleft == 0) {
@@ -188,9 +188,9 @@ static __always_inline u8 _pc_io_read(void *o, int addr)
 	PC *pc = o;
 	u8 val;
 
-    if (COVOX_IS_SOUND_MASTER(pc->covox_enabled) &&
-        (addr & 0xffe0) == csm_get_io_base())
-        return csm_read((uint16_t)addr);
+	if (COVOX_IS_SOUND_MASTER(pc->covox_enabled) &&
+	    (addr & 0xffe0) == csm_get_io_base())
+		return csm_read((uint16_t)addr);
 
 	switch(addr) {
 	case 0x20: case 0x21: case 0xa0: case 0xa1:

@@ -98,7 +98,7 @@ void pcspk_callback(void *opaque, uint8_t *stream, int free)
     int k = 0;
     while (free > 0) {
         n = s->samples - s->play_pos;
-        if (n > free)
+        if (n > (unsigned int)free)
             n = free;
         memcpy(stream + k, &s->sample_buf[s->play_pos], n);
 //        n = AUD_write(s->voice, &s->sample_buf[s->play_pos], n);

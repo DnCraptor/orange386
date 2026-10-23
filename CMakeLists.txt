@@ -57,10 +57,6 @@ add_executable(orange386
     # Configuration
     src/ini.c
 )
-# vga.c keeps murm386's software framebuffer renderer for non-scanout hosts;
-# like the RP2350 build, this port scans out through vga_hw_linux.c instead.
-set_source_files_properties(src/vga.c PROPERTIES COMPILE_OPTIONS -Wno-unused-function)
-
 find_package(Threads REQUIRED)
 target_link_libraries(orange386 PRIVATE PkgConfig::LIBDRM PkgConfig::ALSA Threads::Threads m)
 target_compile_options(orange386 PRIVATE

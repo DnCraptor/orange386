@@ -1194,7 +1194,7 @@ OPL *OPL_new(uint32_t clk, uint32_t rate) {
         initializeTables();
     }
 
-    opl = (OPL *) calloc(sizeof(OPL), 1);
+    opl = (OPL *) calloc(1, sizeof(OPL));
     if (opl == NULL)
         return NULL;
 
