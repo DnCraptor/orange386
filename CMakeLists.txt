@@ -32,8 +32,10 @@ add_executable(orange386
     src/video_profile.c
     src/i386.c
     src/fpu.c
+    # Real-mode 8086/80186/80286 core ([cpu] gen=0..2), as murm386's 286 build
+    src/286/cpu.c
+    src/286/fpu.c
     # Native BIOS (bios=native), ported from murm386's RP2350 SeaBIOS port
-    src/bios/dispatch.c
     src/bios/bios_00h.c
     src/bios/bios_05h.c
     src/bios/bios_08h.c

@@ -43,6 +43,10 @@ Keyboards and mice are grabbed exclusively while the emulator runs.
 
 Native ARM applications (ELF/EZ executables built for the RP2350) are not supported: they are Cortex-M33 Thumb code, and EXEC refuses them.
 
+`[cpu] gen` (also Settings, Win+F11, "CPU Type") selects the CPU core: 0..2 (8086, 80186, 80286) run the real-mode 286 core of murm386's 286 build, 3..5 the 386 core. A change takes effect after the restart the Settings page offers. SeaBIOS is 32-bit code and does not boot on the 286 core: use `bios=native` (or an 8086/286 BIOS image) there.
+
+The native BIOS can also present a whole disk as a raw BIOS hard disk, as murm386 does with its SD card: `raw_disk=/dev/sdX` in `[pc]` / `[386]` names a block device (typically a USB flash drive with an MBR) or a disk image file, and `raw_sd_hdd` places it after (1, default) or before (2) the ATA disks, or hides it (0); the Disk Manager row RAWDISK sets the same. A block device that is mounted on the host is refused, and the drive is read-only if the device or file is. Like on the RP2350, it is only reachable through the native INT 13h, not through IDE/SeaBIOS.
+
 ## Not ported yet
 
 Game controllers other than mouse-as-joystick and the numeric-keypad mouse.

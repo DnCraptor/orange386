@@ -31,11 +31,13 @@ typedef enum {
     DRIVE_NATIVE_DOS = 10, // Native BIOS boot target: native FreeDOS / guest boot media
     DRIVE_TOTAL = 11
 #else
-    /* Linux host: no raw SD card drive, no USB HOST/DEVICE role and no
-     * ESP32 USB modem - the host kernel owns the SD card and USB. */
-    DRIVE_BIOS = 6,
-    DRIVE_NATIVE_DOS = 7, // Native BIOS boot target: native FreeDOS / guest boot media
-    DRIVE_TOTAL = 8
+    /* Linux host: no USB HOST/DEVICE role and no ESP32 USB modem - the host
+     * kernel owns USB.  The raw BIOS disk is the device named by raw_disk=
+     * in config.ini instead of the SD card. */
+    DRIVE_SD_CARD = 6,   // raw_disk= as raw drive (Via BIOS only) - Off/First/Last
+    DRIVE_BIOS = 7,
+    DRIVE_NATIVE_DOS = 8, // Native BIOS boot target: native FreeDOS / guest boot media
+    DRIVE_TOTAL = 9
 #endif
 } DiskUIDrive;
 

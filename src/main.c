@@ -14,6 +14,7 @@
 #include "diskui.h"
 #include "settingsui.h"
 #include "ff.h"
+#include "diskio.h"
 #include "gameport.h"
 #include "input_linux.h"
 #include "mem.h"
@@ -22,6 +23,8 @@
 #include "vga_hw_linux.h"
 #include "video_drm.h"
 #include "video_profile.h"
+#include "vga_osd.h"
+#include "i8259.h"
 
 /* Linux host: Ctrl+C / SIGTERM stop emulation and restore the console CRTC. */
 static volatile sig_atomic_t cpu_running = 1;
@@ -47,6 +50,7 @@ static void host_shutdown(void)
     vga_hw_stop();
     video_drm_close();
     audio_shutdown();
+    disk_raw_detach();
     platform_free_guest_ram();
 }
 
@@ -80,6 +84,86 @@ static void __attribute__((noreturn)) platform_quit(void)
 {
     host_shutdown();
     exit(EXIT_SUCCESS);
+}
+
+//=============================================================================
+// Unsupported CPU feature warning (real-mode 286 core)
+//=============================================================================
+
+/* Set once the scanout runs: the OSD warning is only shown from then on. */
+static bool vga_initialized = false;
+
+/* Timed, non-blocking CPU feature warning. */
+static uint64_t cpu_feature_warning_until_us = 0;
+
+/*
+ * Native BIOS initializes both PIC IMRs to 00h (all IRQs enabled).  A guest
+ * that is forcibly terminated during a protected-mode transition cannot run
+ * its own cleanup and may leave both PICs masked.  Restore the native BIOS
+ * interrupt-mask state when dismissing this specific warning.
+ */
+static void cpu_feature_warning_recover_pic(void)
+{
+    if (!pc || !pc->pic)
+        return;
+
+    i8259_ioport_write(pc->pic, 0x21, 0x00);
+    i8259_ioport_write(pc->pic, 0xA1, 0x00);
+}
+
+/* Called by the 286 core (src/286/cpu.c), e.g. on LMSW with PE=1. */
+void emulator_unsupported_cpu_feature(const char *mnemonic,
+                                      uint16_t cs, uint16_t ip)
+{
+    char where[48];
+
+    printf("WARNING: unsupported 80286 feature at %04X:%04X: %s\n",
+           cs, ip, mnemonic ? mnemonic : "unknown");
+
+    if (!vga_initialized)
+        return;
+
+    osd_init();
+    osd_clear();
+
+    const int box_w = 66;
+    const int box_h = 10;
+    const int box_x = (OSD_COLS - box_w) / 2;
+    const int box_y = (OSD_ROWS - box_h) / 2;
+    const uint8_t attr = OSD_ATTR(OSD_BLACK, OSD_YELLOW);
+
+    osd_fill(box_x, box_y, box_w, box_h, ' ', attr);
+    osd_draw_box_titled(box_x, box_y, box_w, box_h,
+                        " Unsupported 80286 feature ", attr);
+    osd_print(box_x + 3, box_y + 2,
+              mnemonic ? mnemonic : "Unsupported instruction", attr);
+    snprintf(where, sizeof(where), "Guest instruction at %04X:%04X", cs, ip);
+    osd_print(box_x + 3, box_y + 4, where, attr);
+    osd_print(box_x + 3, box_y + 6,
+              "Program terminated.", attr);
+    osd_print(box_x + 3, box_y + 7,
+              "Emulator continues, if state is not corrupted.", attr);
+    osd_show();
+
+    cpu_feature_warning_until_us = time_us_64() + 4000000ull;
+}
+
+static void cpu_feature_warning_tick(void)
+{
+    if (!cpu_feature_warning_until_us)
+        return;
+    if (time_us_64() < cpu_feature_warning_until_us)
+        return;
+
+    cpu_feature_warning_until_us = 0;
+    cpu_feature_warning_recover_pic();
+
+    /*
+     * Do not hide an OSD subsequently taken over by a normal UI.
+     * Otherwise this warning expires independently of emulation.
+     */
+    if (!diskui_is_open() && !settingsui_is_open())
+        osd_hide();
 }
 
 //=============================================================================
@@ -201,6 +285,22 @@ static bool process_keycode(int is_down, int keycode) {
     if (is_down && keycode == HOST_KEY_END &&
         ctrl_key_pressed && alt_key_pressed) {
         cpu_running = 0;
+        return false;
+    }
+
+    /*
+     * Treat the unsupported-CPU warning as a modal OSD for keyboard input:
+     * dismiss it on the first key press and consume that press so it does not
+     * leak through to the guest application underneath the OSD.
+     *
+     * Ignore key releases.  Otherwise release of a key that was already held
+     * before the warning appeared could close the dialog immediately.
+     */
+    if (cpu_feature_warning_until_us && is_down) {
+        cpu_feature_warning_until_us = 0;
+        cpu_feature_warning_recover_pic();
+        if (!diskui_is_open() && !settingsui_is_open())
+            osd_hide();
         return false;
     }
 
@@ -476,6 +576,7 @@ static void load_default_config(void)
     config.mem_size = 16l << 20;
     config.vga_mem_size = (long)video_profile_vram_size();
     config.cpu_gen = EMU_CPU_GEN;
+    config.raw_sd_hdd = RAW_SD_HDD_LAST;   /* as murm386; needs raw_disk= */
     config.fpu = 1;
     config.width = 640;
     config.height = 400;
@@ -539,6 +640,7 @@ static void platform_poll(void *opaque)
      */
     static uint32_t last_poll;
     uint32_t now = get_uticks();
+    cpu_feature_warning_tick();
     if ((uint32_t)(now - last_poll) >= 1000u) {
         last_poll = now;
         poll_keyboard();
@@ -620,6 +722,13 @@ int main(int argc, char **argv)
     const bool cold_boot = !(warm && warm[0] == '1');
     unsetenv(WARM_BOOT_ENV);
 
+    /* [cpu] gen 0..2 runs the real-mode 286 core.  SeaBIOS uses 32-bit code
+     * and cannot boot on it; the native BIOS (or an 8086/286 ROM) can. */
+    if (config.cpu_gen < 3 && config.bios)
+        fprintf(stderr, "Warning: CPU gen %d is the real-mode 286 core; "
+                "%s must be an 8086/286 BIOS (SeaBIOS needs a 386). "
+                "Use bios=native otherwise.\n", config.cpu_gen, config.bios);
+
     if (!platform_alloc_guest_ram((size_t)config.mem_size)) {
         perror("guest RAM allocation");
         return EXIT_FAILURE;
@@ -643,6 +752,8 @@ int main(int argc, char **argv)
     config_set_cpu_gen(config.cpu_gen);
     config_set_fpu(config.fpu);
     config_set_bios_file(config.bios);
+    config_set_raw_sd_hdd(config.raw_sd_hdd);
+    config_set_raw_disk(config.raw_disk);
     // Re-apply Covox once so a saved Sound Master selection establishes its
     // I/O base and removes stale AdLib/SB conflicts from older configs.
     config_set_covox(config_get_covox());
@@ -681,6 +792,7 @@ int main(int argc, char **argv)
     int result = EXIT_FAILURE;
     if (video_drm_open(device, VGA_HW_WIDTH, VGA_HW_HEIGHT) &&
         vga_hw_start(pc->vga)) {
+        vga_initialized = true;
         input_init();
         run_pc();
         result = EXIT_SUCCESS;

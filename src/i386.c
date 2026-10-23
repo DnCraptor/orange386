@@ -3992,7 +3992,7 @@ static bool verrw_helper(CPUI386 *cpu, int sel, int wr, int *zf)
         if (embedded_id != intnum) THROW0(EX_UD); \
         cpu->next_ip = cpu->ip; \
         PREFETCH_RESET \
-        if (native_bios_dispatch((CPU*)cpu, intnum)) { \
+        if (rp2350_bios_handler((CPU*)cpu, intnum)) { \
             IRET(); \
         } else { \
             return true; \
@@ -5515,7 +5515,17 @@ CPU* cpu_new(int gen, CPU_CB **cb)
 {
 	CPU* cpu;
 	switch (gen) {
-#ifndef I386_MODE
+#if ORANGE386
+	/* Both cores are built: [cpu] gen 0..2 runs the real-mode 8086/80186/
+	   80286 core (src/286/cpu.c), 3 and up the 386 core. */
+	case 0: cpu = (CPU*)calloc(1, sizeof(CPU)); cpu->flags_mask = EFLAGS_MASK_86; break;
+	case 1: cpu = (CPU*)calloc(1, sizeof(CPU)); cpu->flags_mask = EFLAGS_MASK_186; break;
+	case 2: cpu = (CPU*)calloc(1, sizeof(CPU)); cpu->flags_mask = EFLAGS_MASK_286; break;
+	case 3: cpu = (CPU*)calloc(1, sizeof(CPUI386)); cpu->flags_mask = EFLAGS_MASK_386; break;
+	case 4: cpu = (CPU*)calloc(1, sizeof(CPUI386)); cpu->flags_mask = EFLAGS_MASK_486; break;
+	default:
+	        cpu = (CPU*)calloc(1, sizeof(CPUI386)); gen = 5; cpu->flags_mask = EFLAGS_MASK_586; break;
+#elif !defined(I386_MODE)
 	case 0: cpu = (CPU*)calloc(1, sizeof(CPU)); cpu->flags_mask = EFLAGS_MASK_86; break;
 	case 1: cpu = (CPU*)calloc(1, sizeof(CPU)); cpu->flags_mask = EFLAGS_MASK_186; break;
 	default:
@@ -5531,6 +5541,11 @@ CPU* cpu_new(int gen, CPU_CB **cb)
 	CPU_ext_accessors_t* cpue = calloc(1, sizeof(CPU_ext_accessors_t));
 	cpu->ext_accessors = cpue;
 
+#if ORANGE386
+	if (gen < 3) {
+		cpu_init_286(cpu);
+	} else {
+#endif
 #ifdef I386_MODE
 			cpue->get_reg8 = get_reg8;
 			cpue->get_reg16 = get_reg16;
@@ -5559,8 +5574,11 @@ CPU* cpu_new(int gen, CPU_CB **cb)
 			cpu->bios_prof_depth = 0;
 			i386_profile_install_bios_hooks(cpu);
 			#endif
-#else
+#elif !ORANGE386
 			cpu_init_286(cpu);
+#endif
+#if ORANGE386
+	}
 #endif
 
 	cpu->ext_accessors->reset((CPU*)cpu);
@@ -5660,6 +5678,14 @@ int IRAM_ATTR cpu_get_a20(CPU* cpu)
 #ifdef I386_MODE
 bool bios_15h_89h(CPU* _cpu)
 {
+#if ORANGE386
+    if (_cpu->gen < 3) {
+        /* Real-mode 286 core: unsupported, as in murm386's 286 build. */
+        _cpu->flags.bits.CF = 1;
+        _cpu->gprx[regax].r8[1] = 0x86;
+        return true;
+    }
+#endif
     CPUI386* cpu = (CPUI386*)_cpu;
     uint32_t table = ((uint32_t)get_seg16(_cpu, SEG_ES) << 4) + CPU_SI;
 
@@ -5736,6 +5762,14 @@ bool bios_15h_89h(CPU* _cpu)
 
 bool bios_15h_E820h(CPU* _cpu)
 {
+#if ORANGE386
+    if (_cpu->gen < 3) {
+        /* Real-mode 286 core: unsupported, as in murm386's 286 build. */
+        _cpu->flags.bits.CF = 1;
+        _cpu->gprx[regax].r8[1] = 0x86;
+        return true;
+    }
+#endif
     CPUI386* cpu = (CPUI386*)_cpu;
     uint32_t dst = ((uint32_t)get_seg16(_cpu, SEG_ES) << 4) + CPU_DI;
     uint32_t idx = REGi(regbx);
@@ -5795,6 +5829,12 @@ bool bios_15h_E820h(CPU* _cpu)
 }
 
 void __not_in_flash() cpu_save_regs(const CPU* cpu, CPU_regs* regs) {
+#if ORANGE386
+	if (cpu->gen < 3) {
+		cpu286_save_regs(cpu, regs);
+		return;
+	}
+#endif
 	regs->es = get_seg16(cpu, SEG_ES);
 	regs->ds = get_seg16(cpu, SEG_DS);
 	regs->fs = get_seg16(cpu, SEG_FS);
@@ -5804,6 +5844,12 @@ void __not_in_flash() cpu_save_regs(const CPU* cpu, CPU_regs* regs) {
     regs->flags = cpu->flags;
 }
 void __not_in_flash() cpu_restore_regs(CPU* cpu, const CPU_regs* regs) {
+#if ORANGE386
+	if (cpu->gen < 3) {
+		cpu286_restore_regs(cpu, regs);
+		return;
+	}
+#endif
     cpu->flags = regs->flags;
    	set_seg((CPUI386*)cpu, SEG_ES, regs->es);
    	set_seg((CPUI386*)cpu, SEG_DS, regs->ds);
@@ -5813,6 +5859,12 @@ void __not_in_flash() cpu_restore_regs(CPU* cpu, const CPU_regs* regs) {
         cpu->gprx[i] = regs->gprx[i];
 }
 void __not_in_flash() cpu_intcall(CPU* cpu, uint8_t intnum) {
+#if ORANGE386
+	if (cpu->gen < 3) {
+		cpu286_intcall(cpu, intnum);
+		return;
+	}
+#endif
     call_isr((CPUI386*)cpu, intnum, false, 1);
 }
 #endif

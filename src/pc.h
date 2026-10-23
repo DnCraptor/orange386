@@ -124,6 +124,11 @@ typedef struct {
 	int fpu;
 	int enable_serial;
 	int vga_force_8dm;
+	/* Raw BIOS hard disk (murm386: the whole SD card).  raw_disk names the
+	 * host block device or image file behind it; raw_sd_hdd places it
+	 * (RAW_SD_HDD_OFF / _LAST / _FIRST among the BIOS hard disks). */
+	int raw_sd_hdd;
+	const char *raw_disk;
 } PCConfig;
 
 PC *pc_new(SimpleFBDrawFunc *redraw, void (*poll)(void *), void *redraw_data,

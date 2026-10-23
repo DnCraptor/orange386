@@ -31,6 +31,9 @@ static int cfg_raw_sd_hdd = RAW_SD_HDD_LAST;
 static int cfg_usb_mode = USB_MODE_HOST;
 static int cfg_usb_modem = 0;
 static char *cfg_esp_firmware = NULL;
+#if defined(ORANGE386)
+static char *cfg_raw_disk = NULL;      /* host device/image behind raw_sd_hdd */
+#endif
 static bool cfg_changed = false;
 
 // Hardware settings (use build-time defaults)
@@ -179,6 +182,14 @@ static void config_set_dynamic_string(char **slot, const char *value, bool hardw
     if (hardware_change)
         cfg_hw_changed = true;
 }
+
+#if defined(ORANGE386)
+const char *config_get_raw_disk(void) { return cfg_raw_disk; }
+void config_set_raw_disk(const char *path)
+{
+    config_set_dynamic_string(&cfg_raw_disk, path, true);
+}
+#endif
 
 const char *config_get_esp_firmware(void) { return cfg_esp_firmware; }
 void config_set_esp_firmware(const char *filename)
@@ -587,6 +598,11 @@ bool config_save_all(void) {
     write_line(&fp, "\n; Disk images\r\n");
     snprintf(line, sizeof(line), "raw_sd_hdd=%d\r\n", cfg_raw_sd_hdd);
     write_line(&fp, line);
+#if defined(ORANGE386)
+    /* A host path (block device or image), not a file on the data root. */
+    if (cfg_raw_disk)
+        write_key_value(&fp, "raw_disk=", cfg_raw_disk);
+#endif
     for (int i = 0; i < 2; i++) {
         const char *fname = fdd_get_filename(i);
         if (fname && fname[0]) {

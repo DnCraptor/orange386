@@ -32,6 +32,15 @@ DRESULT disk_read (BYTE pdrv, BYTE* buff, LBA_t sector, UINT count);
 DRESULT disk_write (BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count);
 DRESULT disk_ioctl (BYTE pdrv, BYTE cmd, void* buff);
 
+#if defined(ORANGE386)
+#include <stdbool.h>
+/* Linux host: back physical drive 0 with a block device or image file
+   (config.ini raw_disk=).  attach returns false and leaves no drive 0 when
+   the path cannot be opened, e.g. a block device mounted on the host. */
+bool disk_raw_attach (const char* path);
+void disk_raw_detach (void);
+#endif
+
 
 /* Disk Status Bits (DSTATUS) */
 

@@ -37,6 +37,11 @@ int config_get_native_dos(void);
 void config_set_native_dos(int enabled);
 int config_get_raw_sd_hdd(void);
 void config_set_raw_sd_hdd(int mode);
+#if defined(ORANGE386)
+/* Host block device or image file behind the raw BIOS hard disk. */
+const char *config_get_raw_disk(void);
+void config_set_raw_disk(const char *path);
+#endif
 
 #define USB_MODE_HOST   0
 #define USB_MODE_DEVICE 1

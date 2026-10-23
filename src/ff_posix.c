@@ -508,38 +508,158 @@ FRESULT f_rename(const TCHAR *path_old, const TCHAR *path_new)
 /*
  * Low level disk interface (diskio.h), physical drive 0.
  *
- * On RP2350 drive 0 is the SD card itself; disk.c can expose it to the guest
- * as a raw BIOS hard disk (raw_sd_hdd).  On Linux the SD card carries the
- * host system, so no physical drive is offered: disk.c keeps raw_sd_hdd off.
+ * On RP2350 drive 0 is the SD card itself, and disk.c can expose it to the
+ * native BIOS as a raw hard disk (raw_sd_hdd, "SD-CARD" in the Disk
+ * Manager).  On Linux the SD card carries the host system, so drive 0 is
+ * whatever config.ini names in raw_disk=: normally a whole USB flash drive
+ * (/dev/sdX), or a disk image file.  Without it no drive 0 exists and
+ * disk.c keeps raw_sd_hdd off.
  */
 #include "diskio.h"
+#include <sys/ioctl.h>
+#include <linux/fs.h>
+
+static int raw_fd = -1;
+static bool raw_readonly;
+static uint64_t raw_sectors;
+
+bool disk_raw_attach(const char *path)
+{
+	disk_raw_detach();
+	if (!path || !path[0])
+		return false;
+
+	/* O_EXCL on a block device fails with EBUSY while any of its
+	   filesystems is mounted on the host: never share one with the guest. */
+	struct stat st;
+	int excl = (stat(path, &st) == 0 && S_ISBLK(st.st_mode)) ? O_EXCL : 0;
+	int fd = open(path, O_RDWR | O_CLOEXEC | excl);
+	bool readonly = false;
+	if (fd < 0 && (errno == EROFS || errno == EACCES || errno == EPERM)) {
+		fd = open(path, O_RDONLY | O_CLOEXEC | excl);
+		readonly = true;
+	}
+	if (fd < 0) {
+		fprintf(stderr, "raw_disk %s: %s\n", path, strerror(errno));
+		return false;
+	}
+
+	uint64_t bytes = 0;
+	if (fstat(fd, &st) == 0 && S_ISBLK(st.st_mode)) {
+		if (ioctl(fd, BLKGETSIZE64, &bytes) != 0)
+			bytes = 0;
+	} else if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) {
+		bytes = (uint64_t)st.st_size;
+	}
+	/* LBA28/FatFs DWORD sector numbers: at most 2 TiB is addressable. */
+	uint64_t sectors = bytes / 512u;
+	if (sectors > 0xFFFFFFFFull)
+		sectors = 0xFFFFFFFFull;
+	if (!sectors) {
+		fprintf(stderr, "raw_disk %s: no usable size\n", path);
+		close(fd);
+		return false;
+	}
+
+	raw_fd = fd;
+	raw_readonly = readonly;
+	raw_sectors = sectors;
+	printf("raw_disk %s: %llu sectors%s\n", path,
+	       (unsigned long long)sectors, readonly ? " (read-only)" : "");
+	return true;
+}
+
+void disk_raw_detach(void)
+{
+	if (raw_fd >= 0) {
+		fsync(raw_fd);
+		close(raw_fd);
+	}
+	raw_fd = -1;
+	raw_readonly = false;
+	raw_sectors = 0;
+}
 
 DSTATUS disk_initialize(BYTE pdrv)
 {
-	(void)pdrv;
-	return STA_NOINIT | STA_NODISK;
+	return disk_status(pdrv);
 }
 
 DSTATUS disk_status(BYTE pdrv)
 {
-	(void)pdrv;
-	return STA_NOINIT | STA_NODISK;
+	if (pdrv != 0 || raw_fd < 0)
+		return STA_NOINIT | STA_NODISK;
+	return raw_readonly ? STA_PROTECT : 0;
+}
+
+static bool raw_range_ok(LBA_t sector, UINT count)
+{
+	return raw_fd >= 0 && count != 0 &&
+	       (uint64_t)sector < raw_sectors &&
+	       (uint64_t)count <= raw_sectors - (uint64_t)sector;
 }
 
 DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
 {
-	(void)pdrv; (void)buff; (void)sector; (void)count;
-	return RES_NOTRDY;
+	if (pdrv != 0 || raw_fd < 0)
+		return RES_NOTRDY;
+	if (!raw_range_ok(sector, count))
+		return RES_PARERR;
+	size_t len = (size_t)count * 512u;
+	off_t off = (off_t)sector * 512;
+	while (len) {
+		ssize_t n = pread(raw_fd, buff, len, off);
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			return RES_ERROR;
+		buff += n;
+		off += n;
+		len -= (size_t)n;
+	}
+	return RES_OK;
 }
 
 DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
 {
-	(void)pdrv; (void)buff; (void)sector; (void)count;
-	return RES_NOTRDY;
+	if (pdrv != 0 || raw_fd < 0)
+		return RES_NOTRDY;
+	if (raw_readonly)
+		return RES_WRPRT;
+	if (!raw_range_ok(sector, count))
+		return RES_PARERR;
+	size_t len = (size_t)count * 512u;
+	off_t off = (off_t)sector * 512;
+	while (len) {
+		ssize_t n = pwrite(raw_fd, buff, len, off);
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			return RES_ERROR;
+		buff += n;
+		off += n;
+		len -= (size_t)n;
+	}
+	return RES_OK;
 }
 
 DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void *buff)
 {
-	(void)pdrv; (void)cmd; (void)buff;
-	return RES_NOTRDY;
+	if (pdrv != 0 || raw_fd < 0)
+		return RES_NOTRDY;
+	switch (cmd) {
+	case CTRL_SYNC:
+		return fdatasync(raw_fd) == 0 ? RES_OK : RES_ERROR;
+	case GET_SECTOR_COUNT:
+		*(DWORD *)buff = (DWORD)raw_sectors;
+		return RES_OK;
+	case GET_SECTOR_SIZE:
+		*(WORD *)buff = 512;
+		return RES_OK;
+	case GET_BLOCK_SIZE:
+		*(DWORD *)buff = 1;
+		return RES_OK;
+	default:
+		return RES_PARERR;
+	}
 }

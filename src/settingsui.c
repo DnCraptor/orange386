@@ -84,12 +84,18 @@ typedef enum {
 static const int vol_options[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
 static const int vol_option_count = 17;
 
+#if ORANGE386
+/* Both cores are built: 0..2 select the real-mode 286 core, 3..5 the 386. */
+static const int cpu_options[] = { 0, 1, 2, 3, 4, 5 };
+static const int cpu_option_count = 6;
+#else
 #ifndef I386_MODE
 static const int cpu_options[] = { 0, 1, 2 };
 #else
 static const int cpu_options[] = { 3, 4, 5 };
 #endif
 static const int cpu_option_count = 3;
+#endif
 
 #if SETTINGS_BOARD_ITEMS
 static const int cpu_freq_options[] = { 252, 378, 504, 524, 564 };

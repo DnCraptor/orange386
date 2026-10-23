@@ -25,8 +25,9 @@
 #include <stdlib.h>
 #include <hardware/watchdog.h>
 
-/* Linux host (ORANGE386): no raw SD card drive, no USB HOST/DEVICE role and
- * no ESP32 USB modem, so their rows and actions are left out. */
+/* Linux host (ORANGE386): no USB HOST/DEVICE role and no ESP32 USB modem,
+ * so their rows and actions are left out.  The raw BIOS disk row stays; it
+ * places the raw_disk= device instead of the SD card. */
 #ifndef ORANGE386
 #define DISKUI_BOARD_ROWS 1
 #else
@@ -53,6 +54,10 @@ static const DriveInfo drive_table[DRIVE_TOTAL] = {
     { "ATA1-1", "ATA Disk" },  // DRIVE_ATA1_1
 #if DISKUI_BOARD_ROWS
     { "SD-CARD", "Via BIOS  [only]" },  // DRIVE_SD_CARD  (On/Off toggle)
+#else
+    { "RAWDISK", "Via BIOS  [only]" },  // DRIVE_SD_CARD  (raw_disk= device)
+#endif
+#if DISKUI_BOARD_ROWS
     { "  USB",   " mode"         },  // DRIVE_USB_MODE (HOST/DEVICE toggle)
     { "  USB",   " modem"        },  // DRIVE_ESP_FW
 #endif
@@ -72,13 +77,13 @@ static int file_scroll_offset = 0;
 static char *pending_filename[DRIVE_TOTAL];
 static bool pending_changed[DRIVE_TOTAL];  // true if user modified this drive
 static bool reboot_required;               // derived from pending reboot-only changes
-#if DISKUI_BOARD_ROWS
-static bool modem_flash_requested = false;
-
 // Pending values for the SD-CARD placement / USB mode. They are
 // only written to the config on "Save and Reboot" so config_get_usb_mode()
 // keeps reflecting the *running* mode until then. Initialised in diskui_open().
 static int pending_raw_sd;                 // RAW_SD_HDD_*
+#if DISKUI_BOARD_ROWS
+static bool modem_flash_requested = false;
+
 static int pending_usb_mode;               // USB_MODE_HOST / USB_MODE_DEVICE
 #endif
 static int pending_native_dos;              // 1 = native FreeDOS, 0 = guest boot media
@@ -117,10 +122,10 @@ static void eject_pending(void);
 static void apply_and_close(void);
 static void reset_pending(void);
 static void browser_close(void);
+static void cycle_sd_card(int direction);
 #if DISKUI_BOARD_ROWS
 static int first_attached_drive(void);
 static void usb_device_exit_to_host(void);
-static void cycle_sd_card(int direction);
 static void toggle_usb_mode(void);
 static void modem_flash_progress(uint32_t done, uint32_t total, void *user);
 static void modem_flash_stage(const char *status, void *user);
@@ -147,7 +152,7 @@ static bool row_is_toggle(int row) {
 #if DISKUI_BOARD_ROWS
     return row == DRIVE_SD_CARD || row == DRIVE_USB_MODE || row == DRIVE_NATIVE_DOS;
 #else
-    return row == DRIVE_NATIVE_DOS;
+    return row == DRIVE_SD_CARD || row == DRIVE_NATIVE_DOS;
 #endif
 }
 
@@ -174,10 +179,10 @@ static const char *get_drive_filename(int drive_idx) {
 
 static void update_reboot_required(void) {
     reboot_required = (pending_native_dos != config_get_native_dos()) ||
-                      pending_changed[DRIVE_BIOS];
+                      pending_changed[DRIVE_BIOS] ||
+                      (pending_raw_sd != config_get_raw_sd_hdd());
 #if DISKUI_BOARD_ROWS
     reboot_required = reboot_required ||
-                      (pending_raw_sd != config_get_raw_sd_hdd()) ||
                       (pending_usb_mode != config_get_usb_mode());
 #endif
 
@@ -369,10 +374,10 @@ void diskui_open(void) {
         }
     }
 
-    /* Toggle rows start from the current (running) config. */
-    pending_raw_sd     = config_get_raw_sd_hdd();
     pending_usb_mode   = config_get_usb_mode();
 #endif
+    /* Toggle rows start from the current (running) config. */
+    pending_raw_sd     = config_get_raw_sd_hdd();
     pending_native_dos = config_get_native_dos();
 
     menu_state = MENU_MAIN;
@@ -508,7 +513,6 @@ static void draw_main_menu(void) {
         // Config toggle rows: right-aligned < value >, no file/[Select]/[Eject]
         if (row_is_toggle(i)) {
             const char *val;
-#if DISKUI_BOARD_ROWS
             if (i == DRIVE_SD_CARD) {
                 if (pending_raw_sd == RAW_SD_HDD_FIRST)
                     val = "< First >";
@@ -516,7 +520,9 @@ static void draw_main_menu(void) {
                     val = "< Last >";
                 else
                     val = "< Off >";
-            } else if (i == DRIVE_USB_MODE) {
+            } else
+#if DISKUI_BOARD_ROWS
+            if (i == DRIVE_USB_MODE) {
                 val = (pending_usb_mode == USB_MODE_DEVICE) ? "< DEVICE >" : "< HOST >";
             } else
 #endif
@@ -883,7 +889,6 @@ static void eject_pending(void) {
     draw_main_menu();
 }
 
-#if DISKUI_BOARD_ROWS
 // SD-CARD / USB toggles: only change the pending value here. They need a
 // reboot to take effect, so mark reboot_required; the config is written in
 // apply_and_close(). This keeps config_get_usb_mode() = the running mode.
@@ -904,6 +909,7 @@ static void cycle_sd_card(int direction) {
     draw_main_menu();
 }
 
+#if DISKUI_BOARD_ROWS
 static void toggle_usb_mode(void) {
     pending_usb_mode = (pending_usb_mode == USB_MODE_DEVICE)
                        ? USB_MODE_HOST : USB_MODE_DEVICE;
@@ -967,9 +973,9 @@ static void apply_remaining_and_close(void)
         }
     }
 
-#if DISKUI_BOARD_ROWS
     if (pending_raw_sd != config_get_raw_sd_hdd())
         config_set_raw_sd_hdd(pending_raw_sd);
+#if DISKUI_BOARD_ROWS
     if (pending_usb_mode != config_get_usb_mode())
         config_set_usb_mode(pending_usb_mode);
 #endif
@@ -1077,8 +1083,8 @@ bool diskui_handle_key(int keycode, bool is_down) {
                         apply_and_close();
                         break;
                     }
-#if DISKUI_BOARD_ROWS
                     if (selected_row == DRIVE_SD_CARD) { cycle_sd_card(1); break; }
+#if DISKUI_BOARD_ROWS
                     if (selected_row == DRIVE_USB_MODE) { toggle_usb_mode(); break; }
 #endif
                     if (selected_row == DRIVE_NATIVE_DOS) { toggle_native_dos(); break; }
@@ -1099,18 +1105,20 @@ bool diskui_handle_key(int keycode, bool is_down) {
                 }
 
                 case KEY_LEFT:
-#if DISKUI_BOARD_ROWS
                     if (selected_row == DRIVE_SD_CARD) cycle_sd_card(-1);
-                    else if (selected_row == DRIVE_USB_MODE) toggle_usb_mode();
+                    else
+#if DISKUI_BOARD_ROWS
+                    if (selected_row == DRIVE_USB_MODE) toggle_usb_mode();
                     else
 #endif
                     if (selected_row == DRIVE_NATIVE_DOS) toggle_native_dos();
                     break;
 
                 case KEY_RIGHT:
-#if DISKUI_BOARD_ROWS
                     if (selected_row == DRIVE_SD_CARD) cycle_sd_card(1);
-                    else if (selected_row == DRIVE_USB_MODE) toggle_usb_mode();
+                    else
+#if DISKUI_BOARD_ROWS
+                    if (selected_row == DRIVE_USB_MODE) toggle_usb_mode();
                     else
 #endif
                     if (selected_row == DRIVE_NATIVE_DOS) toggle_native_dos();

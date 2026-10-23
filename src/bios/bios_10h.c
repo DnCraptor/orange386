@@ -4001,7 +4001,9 @@ void bios_10h_install_rom_fonts(CPU* cpu) // calling from load_bios_and_reset
 void vga_bios_baner(CPU* cpu)
 {
     char banner[80];
-#if I386_MODE
+#if ORANGE386
+    const char *core = cpu->gen >= 3 ? "PC em386 BIOS" : "PC em286 BIOS";
+#elif I386_MODE
     const char *core = "PC em386 BIOS";
 #else
     const char *core = "PC em286 BIOS";

@@ -78,7 +78,12 @@ void getea(CPU* cpu, uint8_t rmval);
 #define SET_SS(x) cpu->ext_accessors->set_seg16(cpu, SEG_SS, (x))
 #define SET_DS(x) cpu->ext_accessors->set_seg16(cpu, SEG_DS, (x))
 
-#if I386_MODE
+#if ORANGE386
+/* Both cores are built (cpu_new() picks one by cpu->gen): the 386 core keeps
+ * the architectural IP in next_ip, the real-mode 286 core in ip. */
+#define SET_IP(x) do { cpu->ip = (x); cpu->next_ip = (x); PREFETCH_RESET } while(0)
+#define CPU_IP    ((uint16_t)(cpu->gen >= 3 ? cpu->next_ip : cpu->ip))
+#elif I386_MODE
 #define SET_IP(x) do { cpu->ip = (x); cpu->next_ip = (x); PREFETCH_RESET } while(0)
 #define CPU_IP    ((uint16_t)(cpu->next_ip))
 #else

@@ -2,6 +2,7 @@
 #include "mem.h"
 #include "ide.h"
 #include "ff.h"
+#include "diskio.h"
 #include "bulk_bounce.h"
 #include "video_profile.h"
 #include "dss.h"
@@ -1107,7 +1108,12 @@ PC *pc_new(SimpleFBDrawFunc *redraw, void (*poll)(void *), void *redraw_data,
 		}
 	}
 
-	/* The physical SD card is the host's system disk: no raw SD HDD. */
+	/* murm386 exposes the whole SD card here.  On the host the SD card is
+	 * the system disk; raw_disk= names the device or image instead. */
+	if (disk_raw_attach(conf->raw_disk))
+		disk_set_raw_sd_hdd((uint8_t)conf->raw_sd_hdd);
+	else
+		disk_set_raw_sd_hdd(RAW_SD_HDD_OFF);
 
 	/* CD-ROM E: always present on ide2/drive0 (secondary master).
 	 * Only attach if cdc= didn't already claim that slot (ata[2]). */
@@ -1417,8 +1423,17 @@ static void bios_post_components(PC *pc)
     char serial[40], parallel[40];
     char hdd[6][40];
 
-#if I386_MODE
+	/* Both CPU cores are built: gen 0..2 is the real-mode 286 core. */
 	switch(pc->cpu->gen) {
+		case 0:
+    		snprintf(left, sizeof(left), "CPU      : 8086 ");
+			break;
+		case 1:
+    		snprintf(left, sizeof(left), "CPU      : 80186");
+			break;
+		case 2:
+    		snprintf(left, sizeof(left), "CPU      : 80286");
+			break;
 		case 4:
     		snprintf(left, sizeof(left), "CPU      : i486");
 			break;
@@ -1432,19 +1447,6 @@ static void bios_post_components(PC *pc)
     		snprintf(left, sizeof(left), "CPU      : 80386");
 			break;
 	}
-#else
-	switch(pc->cpu->gen) {
-		case 0:
-    		snprintf(left, sizeof(left), "CPU      : 8086 ");
-			break;
-		case 1:
-    		snprintf(left, sizeof(left), "CPU      : 80186");
-			break;
-		default:
-    		snprintf(left, sizeof(left), "CPU      : 80286");
-			break;
-	}
-#endif
     snprintf(right, sizeof(right), "FPU      : %s",
              pc->fpu_enabled ? "80387" : "not installed");
 
@@ -1914,7 +1916,7 @@ void bios_post(PC *pc) {
  * программы с TF/INT 1 (Norton Utilities и т.п.) ожидают увидеть ROM BIOS,
  * прежде чем передать управление оригинальному обработчику.  Каждый entry
  * делает JMP FAR на обычный guest-visible native escape-stub F000:Cxxx; уже
- * там 0F FF <id> передаёт управление native_bios_dispatch().
+ * там 0F FF <id> передаёт управление rp2350_bios_handler().
  *
  * Старого специального окна FFE00-FFEFF больше нет.  FFEFF остаётся
  * отдельным callback sentinel: в нём лежит 0F FF FF, а bios_FFh различает
@@ -2033,6 +2035,12 @@ int parse_conf_ini(void* user, const char* section,
 				conf->mem_size = mb << 20;
 		} else if (NAME("cpu")) {
 			conf->cpu_gen = atoi(value);
+		} else if (NAME("raw_sd_hdd")) {
+			int mode = atoi(value);
+			conf->raw_sd_hdd = (mode == RAW_SD_HDD_FIRST || mode == RAW_SD_HDD_LAST)
+			                 ? mode : RAW_SD_HDD_OFF;
+		} else if (NAME("raw_disk")) {
+			conf->raw_disk = value[0] ? strdup(value) : NULL;
 		} else if (NAME("hda")) {
 			conf->ata[0] = strdup(value);
 			conf->iscd[0] = 0;
