@@ -18,6 +18,11 @@
 #define __scratch_y(group)
 #define __isr
 
+/* Pico SDK: marks code after a non-returning call (e.g. watchdog_reboot). */
+#ifndef __unreachable
+#define __unreachable() __builtin_unreachable()
+#endif
+
 /* Pico SDK multiply intrinsic (RP2350: guaranteed single-cycle MUL). */
 #ifndef __fast_mul
 #define __fast_mul(a, b) ((a) * (b))

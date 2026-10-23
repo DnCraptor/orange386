@@ -4,13 +4,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <time.h>
 #include <unistd.h>
 
 #include "pc.h"
 #include "audio.h"
 #include "board_config.h"
 #include "config_save.h"
+#include "diskui.h"
+#include "settingsui.h"
 #include "ff.h"
 #include "gameport.h"
 #include "input_linux.h"
@@ -33,6 +35,7 @@ static void stop_cpu(int signum)
 static PCConfig config;
 PC *pc;
 static bool reboot_requested;
+static char **saved_argv;
 
 /*
  * Full "hardware" reboot.  RP2350 reboots the whole MCU through the watchdog;
@@ -44,6 +47,28 @@ static void hard_reboot(void)
 {
     reboot_requested = true;
     cpu_running = 0;
+}
+
+/* Release everything the process holds outside itself: input grabs, the
+ * scanout thread and CRTC, the PCM device and guest RAM.  Idempotent. */
+static void host_shutdown(void)
+{
+    input_shutdown();
+    vga_hw_stop();
+    video_drm_close();
+    audio_shutdown();
+    platform_free_guest_ram();
+}
+
+/* watchdog_reboot() on the host (hardware/watchdog.h): immediate reboot from
+ * any call depth, e.g. Disk Manager "Save and Reboot". */
+void platform_reboot(void)
+{
+    host_shutdown();
+    fflush(NULL);
+    execv("/proc/self/exe", saved_argv);
+    perror("reboot: execv");
+    _exit(EXIT_FAILURE);
 }
 
 //=============================================================================
@@ -63,8 +88,7 @@ enum {
     HOST_KEY_RIGHTCTRL = 97,
     HOST_KEY_RIGHTALT  = 100,
     HOST_KEY_END       = 107,
-    HOST_KEY_DELETE    = 111,
-    HOST_KEY_LEFTMETA  = 125
+    HOST_KEY_DELETE    = 111
 };
 
 /*
@@ -170,8 +194,63 @@ static bool process_keycode(int is_down, int keycode) {
     }
 
     // Track Win key state
-    if (keycode == HOST_KEY_LEFTMETA) {
+    if (keycode == KEY_LEFTMETA) {
         win_key_pressed = is_down;
+    }
+
+    // Win+F12: enter Disk Manager, or switch to it from Settings.
+    if (is_down && keycode == KEY_F12 && win_key_pressed) {
+        if (settingsui_is_open()) {
+            settingsui_close();
+            diskui_open();
+        } else if (!diskui_is_open()) {
+            diskui_open();
+            if (pc) {
+                pc->paused = 1;
+                audio_set_enabled(false);
+            }
+        }
+        return false;  // Don't pass to emulator
+    }
+
+    // Win+F11: enter Settings, or switch to it from Disk Manager.
+    if (is_down && keycode == KEY_F11 && win_key_pressed) {
+        if (diskui_is_open()) {
+            diskui_close();
+            settingsui_open();
+        } else if (!settingsui_is_open()) {
+            settingsui_open();
+            if (pc) {
+                pc->paused = 1;
+                audio_set_enabled(false);
+            }
+        }
+        return false;  // Don't pass to emulator
+    }
+
+    // When disk UI is open, route all keys to it
+    if (diskui_is_open()) {
+        diskui_handle_key(keycode, is_down);
+
+        // Leaving the OSD session resumes the guest.
+        // F11/F12 page switches do not exit OSD.
+        if (!diskui_is_open() && pc && pc->paused) {
+            pc->paused = 0;
+            audio_set_enabled(true);
+        }
+        return false;  // Don't pass to emulator
+    }
+
+    // When settings UI is open, route all keys to it
+    if (settingsui_is_open()) {
+        settingsui_handle_key(keycode, is_down);
+
+        // Same OSD-session exit rule regardless of the page used last.
+        if (!settingsui_is_open() && pc && pc->paused) {
+            pc->paused = 0;
+            audio_set_enabled(true);
+        }
+        return false;  // Don't pass to emulator
     }
 
     if (numpad_mouse_key(is_down, keycode))
@@ -458,6 +537,12 @@ static void platform_poll(void *opaque)
         pc->reset_request = 0;
         hard_reboot();
     }
+    /* Same reachability problem as above: the settings-UI restart request
+       was also only checked in the outer loop. */
+    if (settingsui_restart_requested()) {
+        settingsui_clear_restart();
+        hard_reboot();
+    }
 }
 
 static void run_pc(void)
@@ -471,7 +556,27 @@ static void run_pc(void)
          "Ctrl+Alt+Del reboots.");
     fflush(stdout);
     while (cpu_running && !pc->shutdown_state) {
-        for (int i = 0; i < 10 && cpu_running; i++)
+        // Skip CPU execution when paused (disk UI or settings UI active)
+        if (pc->paused) {
+            // Still poll keyboard to handle UI input
+            poll_keyboard();
+
+            // Animate plasma background for active UI
+            if (diskui_is_open()) {
+                diskui_animate();
+            } else if (settingsui_is_open()) {
+                settingsui_animate();
+            }
+            if (settingsui_restart_requested()) {
+                settingsui_clear_restart();
+                hard_reboot();
+            }
+            const struct timespec frame = { .tv_sec = 0, .tv_nsec = 16000000 };
+            nanosleep(&frame, NULL);  // ~60Hz polling/animation rate
+            continue;
+        }
+
+        for (int i = 0; i < 10 && cpu_running && !pc->paused; i++)
             pc_step(pc, 4096);
     }
 }
@@ -479,6 +584,7 @@ static void run_pc(void)
 int main(int argc, char **argv)
 {
     const char *device = argc > 1 ? argv[1] : "/dev/dri/card0";
+    saved_argv = argv;
     load_default_config();
     if (load_config_from_sd() != 0)
         printf("Using default configuration\n");
@@ -499,6 +605,13 @@ int main(int argc, char **argv)
         platform_free_guest_ram();
         return EXIT_FAILURE;
     }
+
+    // Ensure emulator starts unpaused
+    pc->paused = 0;
+
+    // Initialize disk UI and settings UI
+    diskui_init();
+    settingsui_init();
 
     // Initialize config save module with current values from PCConfig
     config_set_cpu_gen(config.cpu_gen);
@@ -533,24 +646,15 @@ int main(int argc, char **argv)
     audio_set_enabled(true);
 
     int result = EXIT_FAILURE;
-    if (video_drm_open(device, VGA_HW_WIDTH, VGA_HW_HEIGHT)) {
-        if (vga_hw_start(pc->vga)) {
-            input_init();
-            run_pc();
-            input_shutdown();
-            vga_hw_stop();
-            result = EXIT_SUCCESS;
-        }
-        video_drm_close();
+    if (video_drm_open(device, VGA_HW_WIDTH, VGA_HW_HEIGHT) &&
+        vga_hw_start(pc->vga)) {
+        input_init();
+        run_pc();
+        result = EXIT_SUCCESS;
     }
 
-    audio_shutdown();
-    platform_free_guest_ram();
-    if (reboot_requested) {
-        fflush(NULL);
-        execv("/proc/self/exe", argv);
-        perror("reboot: execv");
-        return EXIT_FAILURE;
-    }
+    if (reboot_requested)
+        platform_reboot();
+    host_shutdown();
     return result;
 }

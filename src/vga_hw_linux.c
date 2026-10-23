@@ -19,6 +19,7 @@
 #include "vga_hw_linux.h"
 #include "video_drm.h"
 #include "video_profile.h"
+#include "vga_osd.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -395,6 +396,11 @@ static void render_line(uint32_t line, uint32_t *out)
         return;
     }
     line -= (uint32_t)active_start;
+    // If OSD is visible, it takes over the display completely
+    if (osd_is_visible()) {
+        osd_render_line_rgb(line, out);
+        return;
+    }
     if (current_mode == 1) {
         render_text_line(line, out);
         return;

@@ -20,6 +20,10 @@ add_executable(orange386
     src/audio_linux.c
     src/config_save.c
     src/vga_hw_linux.c
+    src/vga_osd.c    # OSD text plane (Disk Manager / Settings)
+    src/font8x16.c
+    src/diskui.c     # Disk Manager (Win+F12)
+    src/settingsui.c # Settings (Win+F11)
     src/pc.c
     src/video_profile.c
     src/i386.c

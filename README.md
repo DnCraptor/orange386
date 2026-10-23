@@ -32,6 +32,8 @@ Keyboards and mice are grabbed exclusively while the emulator runs.
 |---|---|
 | Ctrl+Alt+Del | Reboot the emulated PC (restarts the emulator process) |
 | Ctrl+Alt+End | Quit (also Ctrl+C / SIGTERM from a terminal) |
+| Win+F12 | Disk Manager: change floppy/ATA images and the BIOS image |
+| Win+F11 | Settings: volume, video adapter, CPU, sound devices, mouse |
 
 ## Configuration
 
@@ -39,7 +41,7 @@ Keyboards and mice are grabbed exclusively while the emulator runs.
 
 ## Not ported yet
 
-Native BIOS and native DOS (`bios=native`), the Disk Manager / Settings OSD (Win+F12 / Win+F11), game controllers other than mouse-as-joystick and the numeric-keypad mouse.
+Native BIOS and native DOS (`bios=native`; choosing `[native]` in the Disk Manager makes the next start fail with a message), game controllers other than mouse-as-joystick and the numeric-keypad mouse.
 
 ## Limits
 

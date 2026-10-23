@@ -1,0 +1,93 @@
+/**
+ * murm-286 - i386 PC Emulator for RP2350
+ *
+ * VGA OSD (On-Screen Display) - text overlay for disk manager and settings UI.
+ *
+ * Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+ * SPDX-License-Identifier: MIT
+ */
+
+#ifndef VGA_OSD_H
+#define VGA_OSD_H
+
+#include <stdint.h>
+#include <stdbool.h>
+
+// OSD dimensions (full screen)
+#define OSD_COLS 80
+#define OSD_ROWS 25
+#define OSD_BUFFER_SIZE (OSD_COLS * OSD_ROWS * 2u)
+
+// OSD colors (CGA-style 4-bit: IRGB for foreground, RGB for background)
+#define OSD_BLACK       0x00
+#define OSD_BLUE        0x01
+#define OSD_GREEN       0x02
+#define OSD_CYAN        0x03
+#define OSD_RED         0x04
+#define OSD_MAGENTA     0x05
+#define OSD_BROWN       0x06
+#define OSD_LIGHTGRAY   0x07
+#define OSD_DARKGRAY    0x08
+#define OSD_LIGHTBLUE   0x09
+#define OSD_LIGHTGREEN  0x0A
+#define OSD_LIGHTCYAN   0x0B
+#define OSD_LIGHTRED    0x0C
+#define OSD_LIGHTMAGENTA 0x0D
+#define OSD_YELLOW      0x0E
+#define OSD_WHITE       0x0F
+
+// Make attribute byte from foreground and background colors
+#define OSD_ATTR(fg, bg) (((bg) << 4) | (fg))
+
+// Common color schemes
+#define OSD_ATTR_NORMAL     OSD_ATTR(OSD_WHITE, OSD_BLUE)
+#define OSD_ATTR_HIGHLIGHT  OSD_ATTR(OSD_YELLOW, OSD_BLUE)
+#define OSD_ATTR_SELECTED   OSD_ATTR(OSD_BLACK, OSD_GREEN)
+#define OSD_ATTR_TITLE      OSD_ATTR(OSD_WHITE, OSD_RED)
+#define OSD_ATTR_BORDER     OSD_ATTR(OSD_LIGHTCYAN, OSD_BLUE)
+#define OSD_ATTR_DISABLED   OSD_ATTR(OSD_DARKGRAY, OSD_BLUE)
+
+// Initialize OSD system
+void osd_init(void);
+
+// Show/hide OSD overlay
+void osd_show(void);
+void osd_hide(void);
+bool osd_is_visible(void);
+
+// Clear OSD buffer
+void osd_clear(void);
+
+// Set character at position with attribute
+void osd_putchar(int x, int y, char ch, uint8_t attr);
+
+// Print string at position with attribute
+void osd_print(int x, int y, const char *str, uint8_t attr);
+
+// Print string centered horizontally at row y
+void osd_print_center(int y, const char *str, uint8_t attr);
+
+// Draw a box with single-line border
+// x, y = top-left corner, w = width, h = height
+void osd_draw_box(int x, int y, int w, int h, uint8_t attr);
+
+// Draw a box with title in the top border
+void osd_draw_box_titled(int x, int y, int w, int h, const char *title, uint8_t attr);
+
+// Fill a rectangular region
+void osd_fill(int x, int y, int w, int h, char ch, uint8_t attr);
+
+// Get pointer to OSD buffer (for direct manipulation)
+// Buffer is OSD_COLS * OSD_ROWS * 2 bytes (char + attr pairs)
+uint8_t *osd_get_buffer(void);
+
+// Draw greyscale plasma background effect
+// Skips the specified window area (wx, wy, ww, wh)
+// seed: varies the plasma pattern (use 0 for static, or frame number for animation)
+void osd_draw_plasma_background(int seed, int wx, int wy, int ww, int wh);
+
+// Render OSD scanline 0..399 as 640 XRGB8888 pixels
+// Called from the scanout thread (vga_hw_linux.c)
+void osd_render_line_rgb(uint32_t line, uint32_t *out);
+
+#endif // VGA_OSD_H
