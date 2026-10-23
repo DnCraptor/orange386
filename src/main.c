@@ -107,6 +107,19 @@ int main(int argc, char **argv)
         drmModeFreeConnector(candidate);
     }
     if (!conn) { fprintf(stderr, "No connected HDMI-A connector with modes found\n"); goto done; }
+
+    printf("Available HDMI modes (%d):\n", conn->count_modes);
+    for (int i = 0; i < conn->count_modes; ++i) {
+        const drmModeModeInfo *m = &conn->modes[i];
+        printf("  %4d x %-4d @ %6.2f Hz  %-16s%s\n",
+            m->hdisplay,
+            m->vdisplay,
+            (double)m->clock * 1000.0 /
+                (m->htotal * m->vtotal),
+            m->name,
+            (m->type & DRM_MODE_TYPE_PREFERRED) ? " [preferred]" : "");
+    }
+
     crtc_id = find_crtc(fd, res, conn);
     if (!crtc_id) { fprintf(stderr, "No usable CRTC found\n"); goto done; }
     old = drmModeGetCrtc(fd, crtc_id);
