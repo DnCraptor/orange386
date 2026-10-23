@@ -4,6 +4,11 @@
 #include "ff.h"
 #include "bulk_bounce.h"
 #include "video_profile.h"
+#include "dss.h"
+#include "csm.h"
+#include "gameport.h"
+#include "config_save.h"
+#include "csm_psg.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +27,8 @@
 /* Общий bounce-буфер нативных bulk-обменов FatFs <-> гость.
    Условия, при которых его допустимо разделять, - в bulk_bounce.h. */
 uint8_t guest_bulk_buf[GUEST_BULK_BUF_SIZE];
+
+#include "mpu401.c.inl"
 
 unsigned long phys_mem_size = 16ul << 20;
 void* g_pc;
@@ -181,6 +188,10 @@ static __always_inline u8 _pc_io_read(void *o, int addr)
 	PC *pc = o;
 	u8 val;
 
+    if (COVOX_IS_SOUND_MASTER(pc->covox_enabled) &&
+        (addr & 0xffe0) == csm_get_io_base())
+        return csm_read((uint16_t)addr);
+
 	switch(addr) {
 	case 0x20: case 0x21: case 0xa0: case 0xa1:
 		val = i8259_ioport_read(pc->pic, addr);
@@ -247,6 +258,26 @@ static __always_inline u8 _pc_io_read(void *o, int addr)
 	case 0x61:
 		val = pcspk_ioport_read(pc->pcspk);
 		return val;
+	case 0x220: case 0x221: case 0x222: case 0x223:
+		if (pc->adlib_enabled) return adlib_read(pc->adlib, addr);
+		return 0xff;
+	case 0x240:
+		if (pc->covox_enabled == COVOX_SOUND_MASTER_240) return 0xff;
+		return 0xff;
+	case 0x241:
+		if (pc->covox_enabled == COVOX_SOUND_MASTER_240) return csm_psg_read_data();
+		return 0xff;
+	case 0x242:
+		if (pc->covox_enabled == COVOX_SOUND_MASTER_240) return pc->covox_sample;
+		return 0xff;
+	case 0x243: case 0x244:
+		if (pc->covox_enabled == COVOX_SOUND_MASTER_240) return 0xff;
+		return 0xff;
+	case 0x228: case 0x229:
+	case 0x388: case 0x389: case 0x38a: case 0x38b:
+		if (pc->adlib_enabled)
+			return adlib_read(pc->adlib, addr);
+		return 0xFF;
 	case 0xcfc: case 0xcfd: case 0xcfe: case 0xcff:
 		val = i440fx_read_data(pc->i440fx, addr - 0xcfc, 0);
 		return val;
@@ -270,6 +301,11 @@ static __always_inline u8 _pc_io_read(void *o, int addr)
 		val = i8257_read_pageh(pc->isa_dma, addr - 0x480);
 		return val;
 	case 0xc0: case 0xc1:
+		/* SN76489 is write-only; return 0xFF on read when Tandy active */
+		if (pc->tandy_enabled)
+			return 0xff;
+		val = i8257_read_chan(pc->isa_hdma, addr - 0xc0, 1);
+		return val;
 	case 0xc2: case 0xc4: case 0xc6:
 	case 0xc8: case 0xca: case 0xcc: case 0xce:
 		val = i8257_read_chan(pc->isa_hdma, addr - 0xc0, 1);
@@ -284,17 +320,45 @@ static __always_inline u8 _pc_io_read(void *o, int addr)
 	case 0x489: case 0x48a: case 0x48b: case 0x48f:
 		val = i8257_read_pageh(pc->isa_hdma, addr - 0x488);
 		return val;
+	case 0x225:
+		if (pc->sb16_enabled) {
+			return sb16_mixer_read(pc->sb16, addr);
+		}
+		return 0xFF;
+	case 0x226: case 0x22a: case 0x22c: case 0x22d: case 0x22e: case 0x22f:
+		if (pc->sb16_enabled) {
+			return sb16_dsp_read(pc->sb16, addr);
+		}
+		return 0xFF;
 	case 0x200: case 0x201: case 0x202: case 0x203:
 	case 0x204: case 0x205: case 0x206: case 0x207:
-		/* Empty game port adapter: axes timed out, no buttons. */
+		/* Analog game port. When no joystick is configured this returns
+		 * 0xF0 - axes timed out, no buttons - which is exactly what an
+		 * empty adapter reads, so probing games behave as before. */
+		if (pc->joystick_enabled)
+			return gameport_read();
 		return 0xf0;
+	// MPU-401
+	case 0x330:
+	case 0x331:
+		if (pc->mpu401_enabled)
+	        return mpu401_read(addr);
+		return 0xFF;
 
-	/* --- LPT1 (0x378) / LPT2 (0x278): printer latches -------------------
-	 * status: bit7 nBusy=1, bit4 Select=1, bit3 nError=1 (printer ready).
+	/* --- LPT1 (0x378): принтер + Disney Sound Source ---------------------
+	 * data:    защёлка (нужна для detect: write 0xAA/0x55 -> read back).
+	 *          При включённом DSS dss_in(0x378) отдаёт тот же последний байт.
+	 * status:  DSS использует ТОЛЬКО бит6 (FIFO full). Остальные биты
+	 *          доливаем как "принтер готов", иначе INT 17h всегда timeout:
+	 *          bit7 nBusy=1, bit4 Select=1, bit3 nError=1  => 0x98.
+	 * control: настоящая защёлка (init = 0x04, как было раньше константой).
+	 *          dss_out() ведёт свой собственный control, чтение ему не нужно.
 	 */
-	case 0x378: return pc->lpt_data[0];
-	case 0x379: return 0xD8;
+	case 0x378: return pc->dss_enabled ? dss_in(addr) : pc->lpt_data[0];
+	case 0x379: return pc->dss_enabled ? (dss_in(addr) | 0x98) : 0xD8;
 	case 0x37A: return pc->lpt_ctrl[0];
+
+	/* --- LPT2 (0x278): принтер + Covox ---------------------------------- */
 	case 0x278: return pc->lpt_data[1];
 	case 0x279: return 0xD8;                 /* idle: nBusy|nAck|Select|nError */
 	case 0x27A: return pc->lpt_ctrl[1];
@@ -327,8 +391,39 @@ static u16 pc_io_read16(void *o, int addr)
 	case 0xcfc: case 0xcfe:
 		val = i440fx_read_data(pc->i440fx, addr - 0xcfc, 1);
 		return val;
+	case 0x220:
+		if (pc->covox_enabled == COVOX_SOUND_MASTER_220) {
+			u16 lo = _pc_io_read(o, addr);
+			u16 hi = _pc_io_read(o, addr + 1);
+			return lo | (hi << 8);
+		}
+		if (pc->adlib_enabled) {
+			u16 lo = _pc_io_read(o, addr);
+			u16 hi = _pc_io_read(o, addr + 1);
+			return lo | (hi << 8);
+		}
+		return 0xFFFF;
+	case 0x228: case 0x388: case 0x38a:
+		if (pc->adlib_enabled) {
+			u16 lo = _pc_io_read(o, addr);
+			u16 hi = _pc_io_read(o, addr + 1);
+			return lo | (hi << 8);
+		}
+		return 0xFFFF;
+	case 0x240:
+		if (pc->covox_enabled == COVOX_SOUND_MASTER_240) {
+			u16 lo = _pc_io_read(o, addr);
+			u16 hi = _pc_io_read(o, addr + 1);
+			return lo | (hi << 8);
+		}
+		return 0xFFFF;
+	/* Game port. Games normally use IN AL, but a 16-bit read must not
+	 * silently return 0 - that reads as "axes already timed out" and the
+	 * stick looks stuck at one extreme. */
 	case 0x200: case 0x201: case 0x202: case 0x203:
 	case 0x204: case 0x205: case 0x206: case 0x207:
+		if (pc->joystick_enabled)
+			return 0xff00u | gameport_read();
 		return 0xfff0u;
 	default:
 		return 0;
@@ -378,6 +473,27 @@ static int pc_io_read_string(void *o, int addr, uint32_t buf, int size, int coun
 static void pc_io_write(void *o, int addr, u8 val)
 {
 	PC *pc = o;
+    if (COVOX_IS_SOUND_MASTER(pc->covox_enabled) &&
+        (addr & 0xffe0) == csm_get_io_base()) {
+        /* Keep the pre-existing Sound Master PSG path alive in parallel
+         * with the AY8930 shadow used by csm.c for AYDMA. */
+        if (COVOX_IS_SOUND_MASTER(pc->covox_enabled)) {
+            switch ((uint16_t)(addr - csm_get_io_base()) & 0x1f) {
+            case 0:
+                csm_psg_select_register(val);
+                break;
+            case 1:
+                csm_psg_write_data(val);
+                break;
+            default:
+                break;
+            }
+        }
+        csm_write((uint16_t)addr, val);
+        if (COVOX_IS_SOUND_MASTER(pc->covox_enabled))
+            csm_psg_set_channel_c_output(csm_channel_c_output_enabled());
+        return;
+    }
 	switch(addr) {
 	case 0x80: case 0xed:
 		/* used by linux, for io delay */
@@ -444,6 +560,26 @@ static void pc_io_write(void *o, int addr, u8 val)
 	case 0x61:
 		pcspk_ioport_write(pc->pcspk, val);
 		return;
+	case 0x220: case 0x221: case 0x222: case 0x223:
+		if (pc->adlib_enabled) adlib_write(pc->adlib, addr, val);
+		return;
+	case 0x240:
+		if (pc->covox_enabled == COVOX_SOUND_MASTER_240) { csm_psg_select_register(val); return; }
+		return;
+	case 0x241:
+		if (pc->covox_enabled == COVOX_SOUND_MASTER_240) { csm_psg_write_data(val); return; }
+		return;
+	case 0x242:
+		if (pc->covox_enabled == COVOX_SOUND_MASTER_240) { pc->covox_sample = val; return; }
+		return;
+	case 0x243: case 0x244:
+		if (pc->covox_enabled == COVOX_SOUND_MASTER_240) return; /* legacy fallback */
+		return;
+	case 0x228: case 0x229:
+	case 0x388: case 0x389: case 0x38a: case 0x38b:
+		if (pc->adlib_enabled)
+			adlib_write(pc->adlib, addr, val);
+		return;
 	case 0x8900:
 		switch (val) {
 		case 'S': if (pc->shutdown_state == 0) pc->shutdown_state = 1; break;
@@ -474,7 +610,14 @@ static void pc_io_write(void *o, int addr, u8 val)
 	case 0x481: case 0x482: case 0x483: case 0x487:
 		i8257_write_pageh(pc->isa_dma, addr - 0x480, val);
 		return;
+	/* 0xC0/0xC1: SN76489 data port when Tandy enabled, hdma ch0 otherwise.
+	 * 0xC2-0xCE: always hdma (Tandy only occupied 0xC0). */
 	case 0xc0: case 0xc1:
+		if (pc->tandy_enabled)
+			sn76489_out(val);
+		else
+			i8257_write_chan(pc->isa_hdma, addr - 0xc0, val, 1);
+		return;
 	case 0xc2: case 0xc4: case 0xc6:
 	case 0xc8: case 0xca: case 0xcc: case 0xce:
 		i8257_write_chan(pc->isa_hdma, addr - 0xc0, val, 1);
@@ -489,17 +632,59 @@ static void pc_io_write(void *o, int addr, u8 val)
 	case 0x489: case 0x48a: case 0x48b: case 0x48f:
 		i8257_write_pageh(pc->isa_hdma, addr - 0x488, val);
 		return;
+	case 0x224:
+		if (pc->sb16_enabled) {
+			sb16_mixer_write_indexb(pc->sb16, addr, val);
+		}
+		return;
+	case 0x225:
+		if (pc->sb16_enabled) {
+			sb16_mixer_write_datab(pc->sb16, addr, val);
+		}
+		return;
+	case 0x226: case 0x22c:
+		if (pc->sb16_enabled) {
+			sb16_dsp_write(pc->sb16, addr, val);
+		}
+		return;
+	/* Tandy 3-Voice Sound (SN76489) - additional alias ports.
+	 * Primary port 0xC0 is handled above.
+	 * 0x1E0: Tandy 1000 SX/TX/HX data port
+	 * 0x2C0: Tandy 1000 A/B mirror */
+	case 0x1E0: case 0x2C0:
+		if (pc->tandy_enabled)
+			sn76489_out(val);
+		return;
+	/* Covox Speech Thing (parallel port DAC)
+	 * 0x278 = LPT2 data. */
 	case 0x278:
 		pc->lpt_data[1] = val;              /* latch! */
+		if (pc->covox_enabled != COVOX_DISABLED) pc->covox_sample = val;
 		return;
 	case 0x27A:
 		pc->lpt_ctrl[1] = val & 0x1F;
 		return;
+	// MPU-401
+	case 0x330:
+	case 0x331:
+		if (pc->mpu401_enabled)
+			mpu401_write(addr, val);
+		return;
+	// Disney Sound Source
 	case 0x378:
 		pc->lpt_data[0] = val;              /* latch! */
+		if (pc->dss_enabled) dss_out(addr, val);
 		return;
 	case 0x37A:
 		pc->lpt_ctrl[0] = val & 0x1F;
+		if (pc->dss_enabled) dss_out(addr, val);
+		return;
+	/* Game port: any write fires the axis one-shots. The value written
+	 * is irrelevant on real hardware and is ignored here too. */
+	case 0x200: case 0x201: case 0x202: case 0x203:
+	case 0x204: case 0x205: case 0x206: case 0x207:
+		if (pc->joystick_enabled)
+			gameport_write();
 		return;
 	/* LPT status/control ports are read-only - writes ignored */
 	case 0x379: case 0x279:
@@ -518,6 +703,29 @@ static void pc_io_write16(void *o, int addr, u16 val)
 		return;
 	case 0x170:
 		ide_data_writew(pc->ide2, val);
+		return;
+	case 0x220:
+		if (pc->covox_enabled == COVOX_SOUND_MASTER_220) {
+			pc_io_write(o, addr, (uint8_t)val);
+			pc_io_write(o, addr + 1, (uint8_t)(val >> 8));
+			return;
+		}
+		if (pc->adlib_enabled) {
+			pc_io_write(o, addr, (uint8_t)val);
+			pc_io_write(o, addr + 1, (uint8_t)(val >> 8));
+		}
+		return;
+	case 0x228: case 0x388: case 0x38a:
+		if (pc->adlib_enabled) {
+			pc_io_write(o, addr, (uint8_t)val);
+			pc_io_write(o, addr + 1, (uint8_t)(val >> 8));
+		}
+		return;
+	case 0x240:
+		if (pc->covox_enabled == COVOX_SOUND_MASTER_240) {
+			pc_io_write(o, addr, (uint8_t)val);
+			pc_io_write(o, addr + 1, (uint8_t)(val >> 8));
+		}
 		return;
 	case 0x3c0: case 0x3c1: case 0x3c2: case 0x3c3:
 	case 0x3c4: case 0x3c5: case 0x3c6: case 0x3c7:
@@ -614,6 +822,7 @@ static void pc_service_impl(PC *pc)
 	kbd_step(pc->i8042);
 	i8257_dma_run(pc->isa_dma);
 	i8257_dma_run(pc->isa_hdma);
+	csm_service();
 	if (pc->fdc) fdc_tick(pc->fdc);
 
 	if (pc->poll) pc->poll(pc->redraw_data);
@@ -958,6 +1167,7 @@ PC *pc_new(SimpleFBDrawFunc *redraw, void (*poll)(void *), void *redraw_data,
 			       1, 12, pc->pic, set_irq,
 			       pc, pc_reset_request);
 	i8042_set_cpu(pc->cpu);
+	pc->adlib = adlib_new();
 	pc->isa_dma = i8257_new(0x00, 0x80, 0x480, 0);
 	pc->isa_hdma = i8257_new(0xc0, 0x88, 0x488, 1);
 	/* Emulink FDD – virtual floppy on ports 0xF1F0/0xF1F4 (required by BIOS) */
@@ -970,9 +1180,24 @@ PC *pc_new(SimpleFBDrawFunc *redraw, void (*poll)(void *), void *redraw_data,
 	pc->fdc = fdc_new(pc->pic, pc->isa_dma);
 	_pc_for_fdc = pc;
 	disk_set_fdc_mediachange_callback(fdc_mediachange_notify);
+	pc->sb16 = sb16_new(0x220, 5,
+			    pc->isa_dma, pc->isa_hdma,
+			    pc->pic, set_irq);
+    csm_init(pc->isa_dma, pc->pic);
 	pc->pcspk = pcspk_init(pc->pit);
+	sn76489_reset();
 
+	// Audio/mouse enable flags default to enabled
+	// These can be disabled via config_set_* functions at runtime
+	pc->adlib_enabled = 1;
+	pc->sb16_enabled = 1;
 	pc->pcspk_enabled = 1;
+	pc->tandy_enabled = 0;
+	pc->covox_enabled = 1;
+	pc->mpu401_enabled = 1;
+	pc->covox_sample  = 128;
+	csm_psg_reset();
+	pc->dss_enabled = 0;
 	pc->mouse_enabled = 1;
 
 	/* LPT: защёлки data/control. control=0x04 (nInit=1). */
@@ -1000,6 +1225,7 @@ void load_bios_and_reset(PC *pc)
 			printf("Skipping VGA BIOS - main BIOS overlaps at 0x%x\n", bios_start);
 		}
 	}
+	sn76489_reset();
 	cpu_reset(pc->cpu);
 }
 

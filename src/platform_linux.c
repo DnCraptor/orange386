@@ -1,6 +1,7 @@
 #include "pc.h"
 #include "mem.h"
 #include "platform_linux.h"
+#include "ff.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -75,45 +76,48 @@ void *pcmalloc(long size)
 }
 
 /**
- * Load ROM file from the data directory into guest memory.
+ * Load ROM file from the data directory into guest memory (via FatFs, so
+ * names are case-insensitive and "/386/..." paths from config.ini resolve
+ * below the data root, as on the SD card).
  * backward != 0: the image ends at addr (system BIOS below 1 MiB).
  * Returns the image size, or -1.
  */
 int load_rom(void *phys_mem, const char *file, uword addr, int backward)
 {
-	char path[1024];
-	if (strchr(file, '/') || strchr(file, '\\'))
+	FIL fp;
+	FRESULT res;
+	UINT bytes_read;
+
+	char path[FF_LFN_BUF + 1 + sizeof(SD_DATA_DIR_SLASH)];
+	if (strchr(file, '/') || strchr(file, '\\') || (file[0] && file[1] == ':'))
 		snprintf(path, sizeof(path), "%s", file);
 	else
 		snprintf(path, sizeof(path), SD_DATA_DIR_SLASH "%s", file);
 
-	FILE *fp = fopen(path, "rb");
-	if (!fp) {
-		printf("Failed to open ROM: %s (%s)\n", path, strerror(errno));
+	res = f_open(&fp, path, FA_READ);
+	if (res != FR_OK) {
+		printf("Failed to open ROM: %s (error %d)\n", path, res);
 		return -1;
 	}
-	if (fseek(fp, 0, SEEK_END) != 0) {
-		fclose(fp);
-		return -1;
-	}
-	long size = ftell(fp);
-	if (size <= 0 || size > 0x100000 || (backward && size > (long)addr) ||
-	    fseek(fp, 0, SEEK_SET) != 0) {
-		printf("ERROR: invalid ROM size: %s (%ld bytes)\n", path, size);
-		fclose(fp);
+
+	FSIZE_t size = f_size(&fp);
+	if (size == 0 || size > 0x100000 || (backward && size > addr)) {
+		printf("ERROR: invalid ROM size: %s (%lu bytes)\n", path,
+		       (unsigned long)size);
+		f_close(&fp);
 		return -1;
 	}
 
 	uint8_t *dest = backward ? (uint8_t *)phys_mem + addr - size
 				 : (uint8_t *)phys_mem + addr;
-	size_t n = fread(dest, 1, (size_t)size, fp);
-	fclose(fp);
-	if (n != (size_t)size) {
-		printf("ERROR: Failed to read ROM: %s (read %zu of %ld)\n",
-		       path, n, size);
+	res = f_read(&fp, dest, (UINT)size, &bytes_read);
+	f_close(&fp);
+	if (res != FR_OK || bytes_read != size) {
+		printf("ERROR: Failed to read ROM: %s (error %d, read %u of %lu)\n",
+		       path, res, bytes_read, (unsigned long)size);
 		return -1;
 	}
-	printf("Loaded ROM: %s (%ld bytes) at 0x%05lx\n", path, size,
+	printf("Loaded ROM: %s (%lu bytes) at 0x%05lx\n", path, (unsigned long)size,
 	       (unsigned long)(backward ? addr - size : addr));
 	return (int)size;
 }
@@ -145,4 +149,72 @@ const void *dos_api_memchr(const void *src, int value, size_t len)
 void *nf_memset(void *ptr, int value, size_t len)
 {
 	return memset(ptr, value, len);
+}
+
+/*
+ * Pico SDK repeating timers (pico/time.h) on host threads.
+ */
+#include <pico/time.h>
+
+static uint64_t mono_us(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+static void sleep_until_us(uint64_t t)
+{
+	struct timespec ts = {
+		.tv_sec = (time_t)(t / 1000000u),
+		.tv_nsec = (long)(t % 1000000u) * 1000L,
+	};
+	while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL) == EINTR)
+		;
+}
+
+static void *repeating_timer_main(void *arg)
+{
+	repeating_timer_t *rt = arg;
+	uint64_t period = (uint64_t)(rt->delay_us < 0 ? -rt->delay_us : rt->delay_us);
+	uint64_t next = mono_us() + period;
+	while (rt->running) {
+		sleep_until_us(next);
+		if (!rt->running)
+			break;
+		uint64_t start = mono_us();
+		if (!rt->callback(rt))
+			break;
+		/* delay_us > 0: end-to-start; delay_us < 0: start-to-start */
+		next = rt->delay_us > 0 ? mono_us() + period : start + period;
+	}
+	rt->running = false;
+	return NULL;
+}
+
+bool add_repeating_timer_us(int64_t delay_us, repeating_timer_callback_t callback,
+			    void *user_data, repeating_timer_t *out)
+{
+	if (!out || !callback || delay_us == 0)
+		return false;
+	out->delay_us = delay_us;
+	out->callback = callback;
+	out->user_data = user_data;
+	out->running = true;
+	if (pthread_create(&out->thread, NULL, repeating_timer_main, out) != 0) {
+		out->running = false;
+		return false;
+	}
+	return true;
+}
+
+bool cancel_repeating_timer(repeating_timer_t *timer)
+{
+	if (!timer || !timer->thread)
+		return false;
+	bool was_running = timer->running;
+	timer->running = false;
+	pthread_join(timer->thread, NULL);
+	timer->thread = 0;
+	return was_running;
 }

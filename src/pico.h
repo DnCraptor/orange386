@@ -18,4 +18,18 @@
 #define __scratch_y(group)
 #define __isr
 
+/*
+ * Data memory barrier.  murm386 uses CMSIS __dmb() to order lock-free
+ * producer/consumer queues between core0 and core1 (AdLib); on the host the
+ * producer and consumer are threads, so a full fence gives the same order.
+ */
+/* Pico SDK multiply intrinsic (RP2350: guaranteed single-cycle MUL). */
+#ifndef __fast_mul
+#define __fast_mul(a, b) ((a) * (b))
+#endif
+
+#ifndef __dmb
+#define __dmb() __atomic_thread_fence(__ATOMIC_SEQ_CST)
+#endif
+
 #endif /* ORANGE386_PICO_H */

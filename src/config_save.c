@@ -1,0 +1,783 @@
+/**
+ * murm-286 - i386 PC Emulator for RP2350
+ *
+ * Configuration Save - writes configuration to INI file on SD card.
+ *
+ * Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+ * SPDX-License-Identifier: MIT
+ */
+
+#include "config_save.h"
+#include "gameport.h"
+#include "board_config.h"
+#include "disk.h"
+#include "ff.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include "pc.h"
+#include "video_profile.h"
+#include "csm_psg.h"
+#include "csm.h"
+#include "sb16.h"
+
+// Current configuration values (minimal storage)
+static int cfg_cpu_gen = EMU_CPU_GEN;
+static int cfg_fpu = 0;
+static char *cfg_bios = NULL;  /* NULL = Native BIOS */
+static int cfg_native_dos = 1;   /* Native BIOS boots native FreeDOS by default */
+static int cfg_raw_sd_hdd = RAW_SD_HDD_LAST;
+static int cfg_usb_mode = USB_MODE_HOST;
+static int cfg_usb_modem = 0;
+static char *cfg_esp_firmware = NULL;
+static bool cfg_changed = false;
+
+// Hardware settings (use build-time defaults)
+static int cfg_pcspeaker = 1;
+static int cfg_adlib = 1;
+static int cfg_soundblaster = 1;
+static int cfg_tandy = 0;
+static int cfg_covox = 1;
+static int cfg_mpu401 = 1;
+static int cfg_dss = 0;
+static int cfg_mouse = 1;
+static int cfg_nes_mouse = 0;
+static int cfg_numpad_mouse = 0;
+static int cfg_nes_joystick = 0;
+static int cfg_usb_joystick = 0;
+static int cfg_mouse_joystick = 0;
+static int cfg_joystick_swap_buttons = 0;
+static int cfg_cpu_freq = CPU_CLOCK_MHZ;
+static int cfg_psram_freq = PSRAM_MAX_FREQ_MHZ;
+static int cfg_psram_size_mb = 0;
+static int cfg_psram_test_freq = 0;
+static int cfg_flash_freq = FLASH_MAX_FREQ_MHZ;
+static int cfg_volume = 15;
+static int cfg_voltage = -1;  /* -1 = auto (by cpu_freq) */
+static int cfg_mouse_invert_y = 0;
+static int cfg_mouse_sensitivity = 4;  /* 0..8; 4 = 1x */
+static int cfg_video_adapter = VIDEO_ADAPTER_DEFAULT;
+static bool cfg_hw_changed = false;
+
+extern PC *pc;
+
+// INI file path
+#define CONFIG_PATH CONFIG_FILE_PATH
+
+bool config_ensure_data_dir(void) {
+    FILINFO info;
+
+    /* Runtime data (BIOS/disk images) stays in /<CPU>. */
+    FRESULT res = f_stat(SD_DATA_DIR, &info);
+    if (res != FR_OK || !(info.fattrib & AM_DIR)) {
+        if (res != FR_NO_FILE && res != FR_NO_PATH)
+            return false;
+        res = f_mkdir(SD_DATA_DIR);
+        if (res != FR_OK && res != FR_EXIST)
+            return false;
+    }
+
+    /* Persistent settings live in /.config/<CPU>/<BOARD>/. */
+    const char *dirs[] = { CONFIG_ROOT_DIR, CONFIG_CPU_DIR, CONFIG_BOARD_DIR };
+    for (unsigned i = 0; i < sizeof(dirs) / sizeof(dirs[0]); ++i) {
+        res = f_stat(dirs[i], &info);
+        if (res == FR_OK) {
+            if (!(info.fattrib & AM_DIR))
+                return false;
+            continue;
+        }
+        if (res != FR_NO_FILE && res != FR_NO_PATH)
+            return false;
+        res = f_mkdir(dirs[i]);
+        if (res != FR_OK && res != FR_EXIST)
+            return false;
+    }
+
+    return true;
+}
+
+void config_init_from_current(void) {
+    // These will be set from PCConfig in main.c
+    cfg_changed = false;
+}
+
+int config_get_cpu_gen(void) { return cfg_cpu_gen; }
+void config_set_cpu_gen(int gen) {
+    if (cfg_cpu_gen != gen) {
+        cfg_cpu_gen = gen;
+        cfg_changed = true;
+    }
+}
+
+int config_get_fpu(void) { return cfg_fpu; }
+void config_set_fpu(int enabled) {
+    if (cfg_fpu != enabled) {
+        cfg_fpu = enabled;
+        cfg_changed = true;
+    }
+}
+
+const char *config_get_bios_file(void) {
+    return cfg_bios;
+}
+
+int config_get_native_dos(void) { return cfg_native_dos; }
+void config_set_native_dos(int enabled) {
+    enabled = !!enabled;
+    if (cfg_native_dos != enabled) {
+        cfg_native_dos = enabled;
+        cfg_changed = true;
+    }
+}
+
+int config_get_raw_sd_hdd(void) { return cfg_raw_sd_hdd; }
+void config_set_raw_sd_hdd(int mode) {
+    if (mode != RAW_SD_HDD_FIRST && mode != RAW_SD_HDD_LAST)
+        mode = RAW_SD_HDD_OFF;
+    if (cfg_raw_sd_hdd != mode) {
+        cfg_raw_sd_hdd = mode;
+        cfg_changed = true;
+    }
+}
+
+int config_get_usb_mode(void) { return cfg_usb_mode; }
+void config_set_usb_mode(int mode) {
+    mode = (mode == USB_MODE_DEVICE) ? USB_MODE_DEVICE : USB_MODE_HOST;
+    if (cfg_usb_mode != mode) {
+        cfg_usb_mode = mode;
+        cfg_changed = true;
+        cfg_hw_changed = true;
+    }
+}
+
+int config_get_usb_modem(void) { return cfg_usb_modem; }
+void config_set_usb_modem(int enabled) {
+    enabled = !!enabled;
+    if (cfg_usb_modem != enabled) {
+        cfg_usb_modem = enabled;
+        cfg_changed = true;
+        cfg_hw_changed = true;
+    }
+}
+
+static void config_set_dynamic_string(char **slot, const char *value, bool hardware_change)
+{
+    if (value && value[0] == '\0')
+        value = NULL;
+
+    if ((!*slot && !value) || (*slot && value && strcmp(*slot, value) == 0))
+        return;
+
+    char *replacement = value ? strdup(value) : NULL;
+    if (value && !replacement)
+        return;
+
+    free(*slot);
+    *slot = replacement;
+    cfg_changed = true;
+    if (hardware_change)
+        cfg_hw_changed = true;
+}
+
+const char *config_get_esp_firmware(void) { return cfg_esp_firmware; }
+void config_set_esp_firmware(const char *filename)
+{
+    config_set_dynamic_string(&cfg_esp_firmware, filename, false);
+}
+
+
+void config_set_bios_file(const char *filename) {
+    const bool native = !filename || filename[0] == '\0' || strcasecmp(filename, "native") == 0;
+    char *replacement = native ? NULL : strdup(filename);
+
+    if (!native && !replacement)
+        return;
+
+    const bool unchanged = native ? (cfg_bios == NULL)
+                                  : (cfg_bios && strcmp(cfg_bios, replacement) == 0);
+
+    if (!unchanged) {
+        char *old = cfg_bios;
+        cfg_bios = replacement;
+        replacement = NULL;
+        cfg_changed = true;
+
+        if (pc)
+            pc->bios = cfg_bios;
+        free(old);
+    } else if (pc) {
+        pc->bios = cfg_bios;
+    }
+
+    free(replacement);
+}
+
+// Hardware settings
+int config_get_pcspeaker(void) { return cfg_pcspeaker; }
+void config_set_pcspeaker(int enabled) {
+    pc->pcspk_enabled = enabled;
+    if (cfg_pcspeaker != enabled) {
+        cfg_pcspeaker = enabled;
+        cfg_changed = true;
+    }
+}
+
+int config_get_adlib(void) { return cfg_adlib; }
+void config_set_adlib(int enabled) {
+    enabled = enabled ? 1 : 0;
+    if (enabled && COVOX_IS_SOUND_MASTER(cfg_covox)) {
+        cfg_covox = COVOX_DISABLED;
+        csm_deactivate();
+        if (pc) {
+            pc->covox_enabled = COVOX_DISABLED;
+            pc->covox_sample = 128;
+            csm_psg_reset();
+        }
+        cfg_changed = true;
+    }
+    if (pc)
+        pc->adlib_enabled = enabled;
+    if (cfg_adlib != enabled) {
+        cfg_adlib = enabled;
+        cfg_changed = true;
+    }
+}
+
+int config_get_soundblaster(void) { return cfg_soundblaster; }
+void config_set_soundblaster(int enabled) {
+    enabled = enabled ? 1 : 0;
+    if (enabled && COVOX_IS_SOUND_MASTER(cfg_covox)) {
+        cfg_covox = COVOX_DISABLED;
+        csm_deactivate();
+        if (pc) {
+            pc->covox_enabled = COVOX_DISABLED;
+            pc->covox_sample = 128;
+            csm_psg_reset();
+        }
+        cfg_changed = true;
+    }
+    if (pc) {
+        pc->sb16_enabled = enabled;
+        if (enabled)
+            sb16_bind_dma(pc->sb16);
+    }
+    if (cfg_soundblaster != enabled) {
+        cfg_soundblaster = enabled;
+        cfg_changed = true;
+    }
+}
+
+int config_get_tandy(void) { return cfg_tandy; }
+void config_set_tandy(int enabled) {
+    pc->tandy_enabled = enabled;
+    if (cfg_tandy != enabled) {
+        cfg_tandy = enabled;
+        cfg_changed = true;
+    }
+}
+
+int config_get_covox(void) { return cfg_covox; }
+void config_set_covox(int mode) {
+    if (mode < COVOX_DISABLED || mode > COVOX_SOUND_MASTER_220)
+        mode = COVOX_DISABLED;
+
+    if (COVOX_IS_SOUND_MASTER(mode)) {
+        /* Sound Master owns the 220h/240h block and DMA1.  Do not leave
+         * AdLib or SB16 active behind it: SB16 also registers DMA1. */
+        if (cfg_adlib) {
+            cfg_adlib = 0;
+            cfg_changed = true;
+        }
+        if (cfg_soundblaster) {
+            cfg_soundblaster = 0;
+            cfg_changed = true;
+        }
+        if (pc) {
+            pc->adlib_enabled = 0;
+            pc->sb16_enabled = 0;
+        }
+        csm_set_io_base(mode == COVOX_SOUND_MASTER_220 ? 0x0220 : 0x0240);
+        csm_bind_dma();
+    } else if (COVOX_IS_SOUND_MASTER(cfg_covox)) {
+        csm_deactivate();
+    }
+
+    if (pc && pc->covox_enabled != mode) {
+        pc->covox_enabled = mode;
+        pc->covox_sample = 128;
+        csm_psg_reset();
+    }
+    if (cfg_covox != mode) {
+        cfg_covox = mode;
+        cfg_changed = true;
+    }
+}
+
+int config_get_mpu401(void) { return cfg_mpu401; }
+void config_set_mpu401(int enabled) {
+    pc->mpu401_enabled = enabled;
+    if (cfg_mpu401 != enabled) {
+        cfg_mpu401 = enabled;
+        cfg_changed = true;
+    }
+}
+
+int config_get_dss(void) { return cfg_dss; }
+void config_set_dss(int enabled) {
+    pc->dss_enabled = enabled;
+    if (cfg_dss != enabled) {
+        cfg_dss = enabled;
+        cfg_changed = true;
+    }
+}
+
+int config_get_mouse(void) { return cfg_mouse; }
+void config_set_mouse(int enabled) {
+    pc->mouse_enabled = enabled || cfg_nes_mouse || cfg_numpad_mouse;
+    if (cfg_mouse != enabled) {
+        cfg_mouse = enabled;
+        cfg_changed = true;
+    }
+}
+
+int config_get_usb_joystick(void) { return cfg_usb_joystick; }
+void config_set_usb_joystick(int enabled) {
+    pc->joystick_enabled = enabled || cfg_nes_joystick || cfg_mouse_joystick;
+    if (cfg_usb_joystick != enabled) {
+        cfg_usb_joystick = enabled;
+        cfg_changed = true;
+    }
+}
+
+int config_get_mouse_joystick(void) { return cfg_mouse_joystick; }
+void config_set_mouse_joystick(int mode) {
+    if (mode < MOUSE_JOYSTICK_DISABLED || mode > MOUSE_JOYSTICK_BOTH)
+        mode = MOUSE_JOYSTICK_DISABLED;
+    pc->joystick_enabled = (mode != MOUSE_JOYSTICK_DISABLED) ||
+                           cfg_nes_joystick || cfg_usb_joystick;
+    if (cfg_mouse_joystick != mode) {
+        cfg_mouse_joystick = mode;
+        cfg_changed = true;
+    }
+}
+
+int config_get_joystick_swap_buttons(void) { return cfg_joystick_swap_buttons; }
+void config_set_joystick_swap_buttons(int enabled) {
+    enabled = !!enabled;
+    gameport_set_button_swap(enabled);
+    if (cfg_joystick_swap_buttons != enabled) {
+        cfg_joystick_swap_buttons = enabled;
+        cfg_changed = true;
+    }
+}
+
+int config_get_nes_joystick(void) { return cfg_nes_joystick; }
+void config_set_nes_joystick(int enabled) {
+    /* Applied live, like the other device toggles: the game port appears
+     * or disappears without a restart. With it off, reads of 0x201 fall
+     * back to 0xF0, which is what an empty adapter returns. */
+    pc->joystick_enabled = enabled || cfg_usb_joystick || cfg_mouse_joystick;
+    if (cfg_nes_joystick != enabled) {
+        cfg_nes_joystick = enabled;
+        cfg_changed = true;
+    }
+}
+
+int config_get_nes_mouse(void) { return cfg_nes_mouse; }
+void config_set_nes_mouse(int enabled) {
+    if (cfg_nes_mouse != enabled) {
+        cfg_nes_mouse = enabled;
+        cfg_changed = true;
+    }
+    /* NES mouse still needs the emulated i8042 mouse port active */
+    if (enabled) pc->mouse_enabled = 1;
+}
+
+int config_get_numpad_mouse(void) { return cfg_numpad_mouse; }
+void config_set_numpad_mouse(int enabled) {
+    enabled = !!enabled;
+    if (cfg_numpad_mouse != enabled) {
+        cfg_numpad_mouse = enabled;
+        cfg_changed = true;
+    }
+    /* Like the NES mouse it needs the emulated i8042 mouse port; INT 33h is
+     * installed at POST, so a guest booted without any mouse needs a restart. */
+    if (enabled) pc->mouse_enabled = 1;
+}
+
+int config_get_cpu_freq(void) { return cfg_cpu_freq; }
+void config_set_cpu_freq(int mhz) {
+    if (cfg_cpu_freq != mhz) {
+        cfg_cpu_freq = mhz;
+        cfg_changed = true;
+        cfg_hw_changed = true;
+    }
+}
+
+int config_get_psram_freq(void) { return cfg_psram_freq; }
+int config_get_psram_size_mb(void) { return cfg_psram_size_mb; }
+int config_get_psram_test_freq(void) { return cfg_psram_test_freq; }
+void config_set_psram_test_cache(int size_mb, int test_freq_mhz) {
+    if (size_mb != 1 && size_mb != 2 && size_mb != 4 &&
+        size_mb != 8 && size_mb != 16)
+        return;
+    cfg_psram_size_mb = size_mb;
+    cfg_psram_test_freq = test_freq_mhz;
+    cfg_changed = true;
+}
+void config_invalidate_psram_test_cache_runtime(void) {
+    cfg_psram_size_mb = 0;
+    cfg_psram_test_freq = 0;
+}
+void config_set_psram_freq(int mhz) {
+    if (cfg_psram_freq != mhz) {
+        cfg_psram_freq = mhz;
+        cfg_changed = true;
+        cfg_hw_changed = true;
+    }
+}
+int config_get_flash_freq(void) { return cfg_flash_freq; }
+void config_set_flash_freq(int mhz) {
+    if (cfg_flash_freq != mhz) {
+        cfg_flash_freq = mhz;
+        cfg_changed = true;
+        cfg_hw_changed = true;
+    }
+}
+int config_get_volume(void) { return cfg_volume; }
+void config_set_volume(int vol) {
+    if (cfg_volume != vol) {
+        cfg_volume = vol;
+        cfg_changed = true;
+    }
+}
+int config_get_voltage(void) { return cfg_voltage; }
+void config_set_voltage(int v) {
+    if (cfg_voltage != v) {
+        cfg_voltage = v;
+        cfg_changed = true;
+        cfg_hw_changed = true;
+    }
+}
+int config_get_video_adapter(void) { return cfg_video_adapter; }
+void config_set_video_adapter(int profile) {
+#if defined(NO_PAGING)
+    profile = VIDEO_ADAPTER_VGA256;
+#endif
+    if (profile < VIDEO_ADAPTER_MCGA || profile > VIDEO_ADAPTER_VGA256)
+        return;
+    if (cfg_video_adapter != profile) {
+        cfg_video_adapter = profile;
+        cfg_changed = true;
+        cfg_hw_changed = true;
+    }
+}
+int config_get_mouse_invert_y(void) { return cfg_mouse_invert_y; }
+void config_set_mouse_invert_y(int enabled) {
+    if (cfg_mouse_invert_y != enabled) {
+        cfg_mouse_invert_y = enabled;
+        cfg_changed = true;
+    }
+}
+
+int config_get_mouse_sensitivity(void) { return cfg_mouse_sensitivity; }
+void config_set_mouse_sensitivity(int index) {
+    if (index < 0) index = 0;
+    if (index > 8) index = 8;
+    if (cfg_mouse_sensitivity != index) {
+        cfg_mouse_sensitivity = index;
+        cfg_changed = true;
+    }
+}
+
+bool config_hw_changed(void) { return cfg_hw_changed; }
+bool config_has_changes(void) { return cfg_changed; }
+void config_clear_changes(void) { cfg_changed = false; cfg_hw_changed = false; }
+
+// Write text using DOS-compatible CRLF line endings.
+static bool write_line(FIL *fp, const char *line) {
+    const char *p = line;
+
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        const char *end = nl ? nl : p + strlen(p);
+        UINT len = (UINT)(end - p);
+        UINT bw;
+
+        if (len) {
+            FRESULT res = f_write(fp, p, len, &bw);
+            if (res != FR_OK || bw != len)
+                return false;
+        }
+
+        if (!nl)
+            break;
+
+        // Preserve an existing CRLF; otherwise convert LF to CRLF.
+        if (nl == p || nl[-1] != '\r') {
+            static const char cr = '\r';
+            FRESULT res = f_write(fp, &cr, 1, &bw);
+            if (res != FR_OK || bw != 1)
+                return false;
+        }
+
+        {
+            static const char lf = '\n';
+            FRESULT res = f_write(fp, &lf, 1, &bw);
+            if (res != FR_OK || bw != 1)
+                return false;
+        }
+
+        p = nl + 1;
+    }
+
+    return true;
+}
+
+static bool write_key_value(FIL *fp, const char *key, const char *value) {
+    return write_line(fp, key) && write_line(fp, value) && write_line(fp, "\r\n");
+}
+
+static bool write_file_key_value(FIL *fp, const char *key, const char *value) {
+    if (!value || !value[0]) return false;
+    if (strchr(value, '/') || strchr(value, '\\') || (value[0] && value[1] == ':'))
+        return write_key_value(fp, key, value);
+
+    char path[FF_LFN_BUF + 1 + sizeof(SD_DATA_DIR_SLASH)];
+    int n = snprintf(path, sizeof(path), "/%s/%s", SD_DATA_DIR, value);
+    if (n < 0 || (size_t)n >= sizeof(path)) return false;
+    return write_key_value(fp, key, path);
+}
+
+bool config_save_all(void) {
+    FIL fp;
+    FRESULT res;
+    char line[80];
+
+    /*
+     * The directory may legitimately disappear while the raw SD card is
+     * exported over USB MSC, or may not exist yet on a fresh card.
+     * Recreate it before trying to persist the configuration.
+     */
+    if (!config_ensure_data_dir())
+        return false;
+
+    res = f_open(&fp, CONFIG_PATH, FA_WRITE | FA_CREATE_ALWAYS);
+    if (res != FR_OK) return false;
+
+    // Write [pc] section
+    write_line(&fp, "[pc]\r\n");
+
+//    snprintf(line, sizeof(line), "vga_mem=%dK\n", cfg_vga_kb);
+//    write_line(&fp, line);
+
+    // CPU
+    snprintf(line, sizeof(line), "cpu=%d\r\n", cfg_cpu_gen);
+    write_line(&fp, line);
+
+    // BIOS files
+    if (cfg_bios)
+        write_file_key_value(&fp, "bios=", cfg_bios);
+    else
+        write_line(&fp, "bios=native\r\n");
+    write_line(&fp, "vga_bios=/" SD_DATA_DIR_SLASH "vgabios.bin\r\n");
+
+    // Disks (must be in [pc] section)
+    write_line(&fp, "\n; Disk images\r\n");
+    snprintf(line, sizeof(line), "raw_sd_hdd=%d\r\n", cfg_raw_sd_hdd);
+    write_line(&fp, line);
+    for (int i = 0; i < 2; i++) {
+        const char *fname = fdd_get_filename(i);
+        if (fname && fname[0]) {
+            char key[5];
+            snprintf(key, sizeof(key), "fd%c=", 'a' + i);
+            write_file_key_value(&fp, key, fname);
+        }
+    }
+    for (int i = 0; i < 4; i++) {
+        const char *fname = ata_get_filename(i);
+        if (fname && fname[0]) {
+            char key[5];
+            snprintf(key, sizeof(key), ata_is_cdrom(i) ? "cd%c=" : "hd%c=", 'a' + i);
+            write_file_key_value(&fp, key, fname);
+        }
+    }
+
+    // FPU (separate section)
+    write_line(&fp, "\n[cpu]\n");
+    snprintf(line, sizeof(line), "gen=%d\r\n", cfg_cpu_gen);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "fpu=%d\r\n", cfg_fpu);
+    write_line(&fp, line);
+
+    // Hardware settings (murm-286-specific)
+    write_line(&fp, "\r\n[murm-286]\r\n");
+    {
+        static const char *video_values[] = { "MCGA", "EGA128", "EGA256", "VGA128", "VGA256" };
+        int v = cfg_video_adapter;
+        if (v < VIDEO_ADAPTER_MCGA || v > VIDEO_ADAPTER_VGA256)
+            v = VIDEO_ADAPTER_VGA256;
+        snprintf(line, sizeof(line), "video=%s\r\n", video_values[v]);
+        write_line(&fp, line);
+    }
+    snprintf(line, sizeof(line), "native_dos=%d\r\n", cfg_native_dos);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "pcspeaker=%d\r\n", cfg_pcspeaker);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "adlib=%d\r\n", cfg_adlib);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "soundblaster=%d\n", cfg_soundblaster);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "tandy=%d\r\n", cfg_tandy);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "covox=%d\r\n", cfg_covox);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "mpu401=%d\r\n", cfg_mpu401);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "dss=%d\r\n", cfg_dss);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "mouse=%d\r\n", cfg_mouse);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "nes_mouse=%d\r\n", cfg_nes_mouse);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "numpad_mouse=%d\r\n", cfg_numpad_mouse);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "nes_joystick=%d\r\n", cfg_nes_joystick);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "usb_joystick=%d\r\n", cfg_usb_joystick);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "mouse_joystick=%d\r\n", cfg_mouse_joystick);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "joystick_swap_buttons=%d\r\n", cfg_joystick_swap_buttons);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "usb=%s\r\n",
+             cfg_usb_mode == USB_MODE_DEVICE ? "DEVICE" : "HOST");
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "usb_modem=%s\r\n",
+             cfg_usb_modem ? "COM1" : "NONE");
+    write_line(&fp, line);
+    if (cfg_esp_firmware)
+        write_file_key_value(&fp, "esp_firmware=", cfg_esp_firmware);
+    else
+        write_line(&fp, "esp_firmware=none\r\n");
+    snprintf(line, sizeof(line), "cpu_freq=%d\r\n", cfg_cpu_freq);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "psram_freq=%d\r\n", cfg_psram_freq);
+    write_line(&fp, line);
+    if (cfg_psram_size_mb) {
+        snprintf(line, sizeof(line), "psram_size=%d\r\n", cfg_psram_size_mb);
+        write_line(&fp, line);
+        snprintf(line, sizeof(line), "psram_test_freq=%d\r\n", cfg_psram_test_freq);
+        write_line(&fp, line);
+    }
+    snprintf(line, sizeof(line), "flash_freq=%d\r\n", cfg_flash_freq);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "volume=%d\r\n", cfg_volume);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "voltage=%d\r\n", cfg_voltage);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "mouse_invert_y=%d\r\n", cfg_mouse_invert_y);
+    write_line(&fp, line);
+    snprintf(line, sizeof(line), "mouse_sensitivity=%d\r\n", cfg_mouse_sensitivity);
+    write_line(&fp, line);
+
+    f_close(&fp);
+    cfg_changed = false;
+    cfg_hw_changed = false;
+    return true;
+}
+
+bool config_save_disks(void) {
+    // For now, save everything (simpler implementation)
+    return config_save_all();
+}
+
+// INI parser callback for [murm-286] section
+int parse_frank_386_ini(void* user, const char* section,
+                      const char* name, const char* value) {
+    (void)user;
+
+    // Accept both new and legacy section names
+    if (strcmp(section, "murm-286") != 0 && strcmp(section, "murm386") != 0) return 1;
+
+    if (strcmp(name, "native_dos") == 0) {
+        cfg_native_dos = !!atoi(value);
+    } else if (strcmp(name, "video") == 0) {
+        VideoAdapterProfile profile;
+        if (video_profile_parse(value, &profile)) {
+#if defined(NO_PAGING)
+            profile = VIDEO_ADAPTER_VGA256;
+#endif
+            cfg_video_adapter = (int)profile;
+            video_profile_set(profile);
+        }
+    } else if (strcmp(name, "pcspeaker") == 0) {
+        cfg_pcspeaker = atoi(value);
+    } else if (strcmp(name, "adlib") == 0) {
+        cfg_adlib = atoi(value);
+    } else if (strcmp(name, "soundblaster") == 0) {
+        cfg_soundblaster = atoi(value);
+    } else if (strcmp(name, "tandy") == 0) {
+        cfg_tandy = atoi(value);
+    } else if (strcmp(name, "covox") == 0) {
+        cfg_covox = atoi(value);
+        if (cfg_covox < COVOX_DISABLED || cfg_covox > COVOX_SOUND_MASTER_220)
+            cfg_covox = COVOX_DISABLED;
+    } else if (strcmp(name, "mpu401") == 0) {
+        cfg_mpu401 = atoi(value);
+    } else if (strcmp(name, "dss") == 0) {
+        cfg_dss = atoi(value);
+    } else if (strcmp(name, "mouse") == 0) {
+        cfg_mouse = atoi(value);
+    } else if (strcmp(name, "usb_joystick") == 0) {
+        cfg_usb_joystick = atoi(value);
+    } else if (strcmp(name, "mouse_joystick") == 0) {
+        cfg_mouse_joystick = atoi(value);
+        if (cfg_mouse_joystick < MOUSE_JOYSTICK_DISABLED ||
+            cfg_mouse_joystick > MOUSE_JOYSTICK_BOTH)
+            cfg_mouse_joystick = MOUSE_JOYSTICK_DISABLED;
+    } else if (strcmp(name, "joystick_swap_buttons") == 0) {
+        cfg_joystick_swap_buttons = !!atoi(value);
+    } else if (strcmp(name, "usb") == 0) {
+        cfg_usb_mode = (strcasecmp(value, "DEVICE") == 0)
+                     ? USB_MODE_DEVICE : USB_MODE_HOST;
+    } else if (strcmp(name, "usb_modem") == 0) {
+        cfg_usb_modem = (strcasecmp(value, "COM1") == 0 || atoi(value) != 0);
+    } else if (strcmp(name, "esp_firmware") == 0) {
+        char *replacement = strcasecmp(value, "none") == 0 ? NULL : strdup(value);
+        if (strcasecmp(value, "none") == 0 || replacement) {
+            free(cfg_esp_firmware);
+            cfg_esp_firmware = replacement;
+        }
+    } else if (strcmp(name, "nes_joystick") == 0) {
+        cfg_nes_joystick = atoi(value);
+    } else if (strcmp(name, "nes_mouse") == 0) {
+        cfg_nes_mouse = atoi(value);
+    } else if (strcmp(name, "numpad_mouse") == 0) {
+        cfg_numpad_mouse = !!atoi(value);
+    } else if (strcmp(name, "cpu_freq") == 0) {
+        cfg_cpu_freq = atoi(value);
+    } else if (strcmp(name, "psram_freq") == 0) {
+        cfg_psram_freq = atoi(value);
+    } else if (strcmp(name, "psram_size") == 0) {
+        int mb = atoi(value);
+        if (mb == 1 || mb == 2 || mb == 4 || mb == 8 || mb == 16)
+            cfg_psram_size_mb = mb;
+    } else if (strcmp(name, "psram_test_freq") == 0) {
+        cfg_psram_test_freq = atoi(value);
+    } else if (strcmp(name, "flash_freq") == 0) {
+        cfg_flash_freq = atoi(value);
+    } else if (strcmp(name, "volume") == 0) {
+        cfg_volume = atoi(value);
+    } else if (strcmp(name, "voltage") == 0) {
+        cfg_voltage = atoi(value);
+    } else if (strcmp(name, "mouse_invert_y") == 0) {
+        cfg_mouse_invert_y = atoi(value);
+    } else if (strcmp(name, "mouse_sensitivity") == 0) {
+        int v = atoi(value);
+        cfg_mouse_sensitivity = v < 0 ? 0 : (v > 8 ? 8 : v);
+    }
+
+    return 1;  // Success
+}

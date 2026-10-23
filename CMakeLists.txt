@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(orange386 VERSION 1.0 LANGUAGES C)
+project(orange386 VERSION 1.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -9,6 +9,7 @@ set(CMAKE_C_FLAGS_RELEASE "-O0 -g")
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBDRM REQUIRED IMPORTED_TARGET libdrm)
+pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)
 
 add_executable(orange386
     src/main.c
@@ -16,6 +17,8 @@ add_executable(orange386
     src/ff_posix.c
     src/video_drm.c
     src/input_linux.c
+    src/audio_linux.c
+    src/config_save.c
     src/vga_hw_linux.c
     src/pc.c
     src/video_profile.c
@@ -28,6 +31,19 @@ add_executable(orange386
     src/disk.c       # INT 13h disk handler (from pico-286)
     src/ide.c
     src/fdd.c
+
+    # Sound devices
+    src/adlib.c      # Adlib/OPL2
+    src/sb16.c       # Sound Blaster 16
+    src/sn76489.c    # Tandy 3-Voice Sound (SN76489)
+    src/dss.c        # Disney Sound Source
+    src/csm.c        # Covox Sound Master AYDMA/DAC
+    src/csm_psg.c    # Covox Sound Master PSG (AY8930)
+    # FM OPL synthesis engine
+    src/emu8950/emu8950.c
+    src/emu8950/emuadpcm.c
+    src/emu8950/slot_render.cpp
+    src/gameport.c   # Analog game port
 
     # Peripheral chips
     src/i8042.c      # Keyboard controller
@@ -46,13 +62,13 @@ add_executable(orange386
 set_source_files_properties(src/vga.c PROPERTIES COMPILE_OPTIONS -Wno-unused-function)
 
 find_package(Threads REQUIRED)
-target_link_libraries(orange386 PRIVATE PkgConfig::LIBDRM Threads::Threads m)
+target_link_libraries(orange386 PRIVATE PkgConfig::LIBDRM PkgConfig::ALSA Threads::Threads m)
 target_compile_options(orange386 PRIVATE
     -Wall
     -Wextra
     -Wno-unused-variable
     -Wno-unused-parameter
-    -Wno-old-style-declaration
+    $<$<COMPILE_LANGUAGE:C>:-Wno-old-style-declaration>
 )
 target_include_directories(orange386 PUBLIC src)
 target_compile_definitions(orange386 PRIVATE
@@ -67,6 +83,26 @@ target_compile_definitions(orange386 PRIVATE
     # the working directory; same names as murm386's SD-card layout.
     SD_DATA_DIR="386"
     SD_DATA_DIR_SLASH="386/"
+
+    SOUND_FREQUENCY=44100
+
+    # OPL2 (same emu8950 configuration as murm386; without PICO_ON_DEVICE
+    # the slot renderer uses its portable path instead of the SIO
+    # interpolators)
+    USE_EMU8950_OPL
+    EMU8950_SLOT_RENDER=1
+    EMU8950_NO_RATECONV=1
+    EMU8950_NO_WAVE_TABLE_MAP=1
+    EMU8950_NO_TLL=1
+    EMU8950_NO_FLOAT=1
+    EMU8950_NO_TIMER=1
+    EMU8950_NO_TEST_FLAG=1
+    EMU8950_SIMPLER_NOISE=1
+    EMU8950_SHORT_NOISE_UPDATE_CHECK=1
+    EMU8950_LINEAR_SKIP=1
+    EMU8950_LINEAR_END_OF_NOTE_OPTIMIZATION
+    EMU8950_NO_PERCUSSION_MODE=1
+    EMU8950_LINEAR=1
 )
 install(TARGETS orange386 RUNTIME DESTINATION bin)
 

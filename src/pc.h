@@ -13,10 +13,13 @@
 #include "vga.h"
 #include "i8042.h"
 #include "misc.h"
+#include "adlib.h"
 #include "i8257.h"
+#include "sb16.h"
 #include "pcspk.h"
 #include "pci.h"
 #include "ini.h"
+#include "sn76489.h"
 #include "fdd.h"
 
 /*
@@ -53,6 +56,7 @@ typedef struct PC {
 	KBDState *i8042;
 	PS2KbdState *kbd;
 	PS2MouseState *mouse;
+	AdlibState *adlib;
 	I8257State *isa_dma, *isa_hdma;
 	FDCState   *fdc;
 
@@ -64,10 +68,22 @@ typedef struct PC {
 		int      argi;
 		int      dataleft;
 	} emulink;
+	SB16State *sb16;
 	PCSpkState *pcspk;
 
+	// Covox Speech Thing - no state object needed, just last sample + enable
+	volatile uint8_t covox_sample;      /* last written DAC value */
+
+	// Runtime enable flags for audio devices (checked in the mixer)
+	int adlib_enabled;
+	int sb16_enabled;
 	int pcspk_enabled;
+	int tandy_enabled;
+	int covox_enabled;
+	int mpu401_enabled;
+	int dss_enabled;
 	int mouse_enabled;
+	int joystick_enabled;   /* analog game port at 0x201 */
 
 	IDEIFState *ide;
 	IDEIFState *ide2;
@@ -121,5 +137,7 @@ void pc_service(PC *pc);
 int parse_conf_ini(void* user, const char* section,
 		   const char* name, const char* value);
 void load_bios_and_reset(PC *pc);
+
+int16_t midi_sample(void);
 
 #endif /* PC_H */

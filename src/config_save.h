@@ -1,0 +1,154 @@
+/**
+ * murm-286 - i386 PC Emulator for RP2350
+ *
+ * Configuration Save - writes configuration to INI file on SD card.
+ *
+ * Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+ * SPDX-License-Identifier: MIT
+ */
+
+#ifndef CONFIG_SAVE_H
+#define CONFIG_SAVE_H
+
+#include <stdint.h>
+#include <stdbool.h>
+
+// Ensure the per-CPU data directory ("/286" or "/386") exists.
+// Safe to call when it already exists.
+bool config_ensure_data_dir(void);
+
+// Save all configuration to INI file
+// Returns true on success
+bool config_save_all(void);
+
+// Save just disk configuration
+bool config_save_disks(void);
+
+// Get/set configuration values (stored in memory until saved)
+int config_get_cpu_gen(void);
+void config_set_cpu_gen(int gen);
+
+int config_get_fpu(void);
+void config_set_fpu(int enabled);
+
+const char *config_get_bios_file(void);
+void config_set_bios_file(const char *filename);
+int config_get_native_dos(void);
+void config_set_native_dos(int enabled);
+int config_get_raw_sd_hdd(void);
+void config_set_raw_sd_hdd(int mode);
+
+#define USB_MODE_HOST   0
+#define USB_MODE_DEVICE 1
+int config_get_usb_mode(void);
+void config_set_usb_mode(int mode);
+
+/* Map the USB-host serial adapter to the emulated PC COM1 port. */
+int config_get_usb_modem(void);
+void config_set_usb_modem(int enabled);
+
+/* Desired ESP32 modem firmware image name. */
+const char *config_get_esp_firmware(void);
+void config_set_esp_firmware(const char *filename);
+
+// Hardware settings (saved in [murm-286] section)
+int config_get_video_adapter(void);
+void config_set_video_adapter(int profile);
+
+int config_get_pcspeaker(void);
+void config_set_pcspeaker(int enabled);
+
+int config_get_adlib(void);
+void config_set_adlib(int enabled);
+
+int config_get_soundblaster(void);
+void config_set_soundblaster(int enabled);
+
+int config_get_tandy(void);
+void config_set_tandy(int enabled);
+
+int config_get_dss(void);
+void config_set_dss(int enabled);
+
+#define COVOX_DISABLED          0
+#define COVOX_ENABLED           1
+/* Keep value 2 as the legacy/default Sound Master setting so existing
+ * config.ini files continue to mean 240h. */
+#define COVOX_SOUND_MASTER_240  2
+#define COVOX_SOUND_MASTER_220  3
+#define COVOX_SOUND_MASTER      COVOX_SOUND_MASTER_240
+#define COVOX_IS_SOUND_MASTER(mode) \
+    ((mode) == COVOX_SOUND_MASTER_240 || (mode) == COVOX_SOUND_MASTER_220)
+int config_get_covox(void);
+void config_set_covox(int mode);
+
+int config_get_mpu401(void);
+void config_set_mpu401(int enabled);
+
+int config_get_mouse(void);
+void config_set_mouse(int enabled);
+
+int config_get_nes_mouse(void);
+void config_set_nes_mouse(int enabled);
+/* Numeric keypad as a mouse while the guest's NumLock is off. */
+int config_get_numpad_mouse(void);
+void config_set_numpad_mouse(int enabled);
+/* NES pad as a DOS analog joystick on the game port (0x201). Mutually
+ * exclusive with nes_mouse: one pad cannot be both at once. */
+int config_get_nes_joystick(void);
+void config_set_nes_joystick(int enabled);
+/* USB gamepad as a DOS analog joystick on the same game port. Can run
+ * alongside the NES pad: both feed the one emulated stick. */
+int config_get_usb_joystick(void);
+void config_set_usb_joystick(int enabled);
+/* Host PS/2/USB mouse translated to the same DOS analog game port.
+ * ONLY suppresses the normal mouse event stream; BOTH feeds both paths. */
+#define MOUSE_JOYSTICK_DISABLED 0
+#define MOUSE_JOYSTICK_ONLY     1
+#define MOUSE_JOYSTICK_BOTH     2
+int config_get_mouse_joystick(void);
+void config_set_mouse_joystick(int mode);
+
+/* Swap game-port button 1 and button 2 for every joystick source. */
+int config_get_joystick_swap_buttons(void);
+void config_set_joystick_swap_buttons(int enabled);
+
+int config_get_cpu_freq(void);
+void config_set_cpu_freq(int mhz);
+
+int config_get_psram_freq(void);
+void config_set_psram_freq(int mhz);
+int config_get_psram_size_mb(void);
+int config_get_psram_test_freq(void);
+void config_set_psram_test_cache(int size_mb, int test_freq_mhz);
+void config_invalidate_psram_test_cache_runtime(void);
+int config_get_flash_freq(void);
+void config_set_flash_freq(int mhz);
+int config_get_volume(void);
+void config_set_volume(int vol);
+int config_get_voltage(void);
+void config_set_voltage(int v);
+int config_get_mouse_invert_y(void);
+void config_set_mouse_invert_y(int enabled);
+
+/* Host mouse speed index: 0..8, default 4 (1x). Applied immediately. */
+int config_get_mouse_sensitivity(void);
+void config_set_mouse_sensitivity(int index);
+
+// Check if hardware settings changed (requires reboot)
+bool config_hw_changed(void);
+
+// Check if config has unsaved changes
+bool config_has_changes(void);
+
+// Reset change tracking (call after save)
+void config_clear_changes(void);
+
+// Initialize config from current PCConfig
+void config_init_from_current(void);
+
+// INI parser callback for [murm-286] section
+int parse_frank_386_ini(void* user, const char* section,
+                      const char* name, const char* value);
+
+#endif // CONFIG_SAVE_H
