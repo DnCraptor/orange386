@@ -107,6 +107,48 @@ typedef struct CPUI386 {
 #endif
 } CPUI386;
 
+/* CPU and CPUI386 share a prefix accessed through CPU*. */
+_Static_assert(sizeof(((CPU *)0)->gprx) == sizeof(((CPUI386 *)0)->gprx),
+               "CPU/CPUI386 register bank size mismatch");
+_Static_assert(offsetof(CPU, gprx) == offsetof(CPUI386, gprx),
+               "CPU/CPUI386 offset mismatch: gprx");
+_Static_assert(offsetof(CPU, ip) == offsetof(CPUI386, ip),
+               "CPU/CPUI386 offset mismatch: ip");
+_Static_assert(offsetof(CPU, next_ip) == offsetof(CPUI386, next_ip),
+               "CPU/CPUI386 offset mismatch: next_ip");
+_Static_assert(offsetof(CPU, flags) == offsetof(CPUI386, flags),
+               "CPU/CPUI386 offset mismatch: flags");
+_Static_assert(offsetof(CPU, flags_mask) == offsetof(CPUI386, flags_mask),
+               "CPU/CPUI386 offset mismatch: flags_mask");
+_Static_assert(offsetof(CPU, intr) == offsetof(CPUI386, intr),
+               "CPU/CPUI386 offset mismatch: intr");
+_Static_assert(offsetof(CPU, gen) == offsetof(CPUI386, gen),
+               "CPU/CPUI386 offset mismatch: gen");
+_Static_assert(offsetof(CPU, a20_mask) == offsetof(CPUI386, a20_mask),
+               "CPU/CPUI386 offset mismatch: a20_mask");
+_Static_assert(offsetof(CPU, ext_accessors) == offsetof(CPUI386, ext_accessors),
+               "CPU/CPUI386 offset mismatch: ext_accessors");
+_Static_assert(offsetof(CPU, cb) == offsetof(CPUI386, cb),
+               "CPU/CPUI386 offset mismatch: cb");
+_Static_assert(offsetof(CPU, excno) == offsetof(CPUI386, excno),
+               "CPU/CPUI386 offset mismatch: excno");
+_Static_assert(offsetof(CPU, excerr) == offsetof(CPUI386, excerr),
+               "CPU/CPUI386 offset mismatch: excerr");
+_Static_assert(offsetof(CPU, bios) == offsetof(CPUI386, bios),
+               "CPU/CPUI386 offset mismatch: bios");
+_Static_assert(offsetof(CPU, native_done) == offsetof(CPUI386, native_done),
+               "CPU/CPUI386 offset mismatch: native_done");
+_Static_assert(offsetof(CPU, prefetch_base) == offsetof(CPUI386, prefetch_base),
+               "CPU/CPUI386 offset mismatch: prefetch_base");
+_Static_assert(offsetof(CPU, prefetch) == offsetof(CPUI386, prefetch),
+               "CPU/CPUI386 offset mismatch: prefetch");
+_Static_assert(offsetof(CPU, int_hooks) == offsetof(CPUI386, int_hooks),
+               "CPU/CPUI386 offset mismatch: int_hooks");
+_Static_assert(offsetof(CPU, fpu) == offsetof(CPUI386, fpu),
+               "CPU/CPUI386 offset mismatch: fpu");
+_Static_assert(offsetof(CPUI386, cpl) >= offsetof(CPU, fpu) + sizeof(((CPU *)0)->fpu),
+               "CPUI386 extension overlaps shared CPU prefix");
+
 bool cpu_load8(CPUI386 *cpu, int seg, uword addr, u8 *res);
 bool cpu_store8(CPUI386 *cpu, int seg, uword addr, u8 val);
 bool cpu_load16(CPUI386 *cpu, int seg, uword addr, u16 *res);

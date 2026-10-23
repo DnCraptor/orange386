@@ -5,9 +5,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* Public CPU ABI: field layout is fixed to 4-byte packing on both sides. */
-#pragma pack(push, 4)
-
 #define regax 0
 #define regcx 1
 #define regdx 2
@@ -228,7 +225,6 @@ CPU_ABI_STATIC_ASSERT(sizeof(struct CPU) == 1208, "CPU ABI size");
 
 #undef CPU_ABI_STATIC_ASSERT
 
-#pragma pack(pop)
 // native system support
 void cpu_install_bios_handlers(CPU*);
 void cpu_install_dos_handlers(CPU*);
