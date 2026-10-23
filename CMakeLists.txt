@@ -15,6 +15,7 @@ add_executable(orange386
     src/platform_linux.c
     src/ff_posix.c
     src/video_drm.c
+    src/input_linux.c
     src/vga_hw_linux.c
     src/pc.c
     src/video_profile.c
