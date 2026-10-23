@@ -34,23 +34,10 @@ static void stop_cpu(int signum)
 
 static PCConfig config;
 PC *pc;
-static bool reboot_requested;
 static char **saved_argv;
 
 /* Set across the execv() of an emulator reboot: the next POST is warm. */
 #define WARM_BOOT_ENV "ORANGE386_WARM_BOOT"
-
-/*
- * Full "hardware" reboot.  RP2350 reboots the whole MCU through the watchdog;
- * the Linux equivalent restarts the emulator process (main() re-executes
- * itself once DRM, input grabs and guest RAM are released), so every device
- * starts from its power-on state exactly as on the board.
- */
-static void hard_reboot(void)
-{
-    reboot_requested = true;
-    cpu_running = 0;
-}
 
 /* Release everything the process holds outside itself: input grabs, the
  * scanout thread and CRTC, the PCM device and guest RAM.  Idempotent. */
@@ -73,6 +60,26 @@ void platform_reboot(void)
     execv("/proc/self/exe", saved_argv);
     perror("reboot: execv");
     _exit(EXIT_FAILURE);
+}
+
+/*
+ * Full "hardware" reboot.  RP2350 reboots the whole MCU through the watchdog;
+ * the Linux equivalent restarts the emulator process (platform_reboot()), so
+ * every device starts from its power-on state exactly as on the board.  It
+ * acts immediately, from any call depth: the native DOS kernel runs nested
+ * pc_step() loops that never return to run_pc().
+ */
+static void hard_reboot(void)
+{
+    platform_reboot();
+}
+
+/* Ctrl+Alt+End / SIGINT / SIGTERM: leave from any call depth, for the same
+ * reason as hard_reboot(). */
+static void __attribute__((noreturn)) platform_quit(void)
+{
+    host_shutdown();
+    exit(EXIT_SUCCESS);
 }
 
 //=============================================================================
@@ -541,11 +548,25 @@ static void platform_poll(void *opaque)
         pc->reset_request = 0;
         hard_reboot();
     }
-    /* Same reachability problem as above: the settings-UI restart request
-       was also only checked in the outer loop. */
     if (settingsui_restart_requested()) {
         settingsui_clear_restart();
         hard_reboot();
+    }
+    if (!cpu_running)
+        platform_quit();
+
+    /* Inside the native DOS kernel run_pc() is not reached: its nested
+       pc_step() loops call this function instead.  While an OSD page is open
+       pc_step() executes no guest code, so pace and animate the OSD here the
+       way run_pc() does for a guest-booted OS. */
+    if (pc && pc->paused) {
+        if (diskui_is_open()) {
+            diskui_animate();
+        } else if (settingsui_is_open()) {
+            settingsui_animate();
+        }
+        const struct timespec frame = { .tv_sec = 0, .tv_nsec = 16000000 };
+        nanosleep(&frame, NULL);  // ~60Hz polling/animation rate
     }
 }
 
@@ -665,8 +686,6 @@ int main(int argc, char **argv)
         result = EXIT_SUCCESS;
     }
 
-    if (reboot_requested)
-        platform_reboot();
     host_shutdown();
     return result;
 }

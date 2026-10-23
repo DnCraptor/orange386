@@ -2,6 +2,7 @@
 #include "mem.h"
 #include "platform_linux.h"
 #include "ff.h"
+#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -121,6 +122,14 @@ uint32_t get_uticks(void)
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (uint32_t)((uint64_t)ts.tv_sec * 1000000u +
 			  (uint64_t)ts.tv_nsec / 1000u);
+}
+
+/* newlib's strupr(), used by the native DOS kernel; not in glibc. */
+char *strupr(char *s)
+{
+	for (char *p = s; *p; ++p)
+		*p = (char)toupper((unsigned char)*p);
+	return s;
 }
 
 void *pcmalloc(long size)

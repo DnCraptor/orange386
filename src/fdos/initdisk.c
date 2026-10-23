@@ -1164,7 +1164,7 @@ static void ReadAllPartitionTables(CPU* cpu)
     nUnits = 2;
 
     nHardDisk = BIOS_nrdrives(cpu);
-    if (nHardDisk > LENGTH(foundPartitions))
+    if (nHardDisk > (int)LENGTH(foundPartitions))
         nHardDisk = LENGTH(foundPartitions);
 
     DebugPrintf(("DSK init: found %d disk drives\n", nHardDisk));

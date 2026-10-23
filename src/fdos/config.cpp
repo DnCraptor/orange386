@@ -5,7 +5,9 @@
 #endif
 
 #define new fdos_new
+#if !defined(ORANGE386)
 #define strchr fdos_strchr_compat
+#endif
 #ifndef _Static_assert
 #define _Static_assert static_assert
 #define FDOS_LOCAL_STATIC_ASSERT_MACRO 1
@@ -18,13 +20,17 @@ extern "C" {
 #undef _Static_assert
 #undef FDOS_LOCAL_STATIC_ASSERT_MACRO
 #endif
+#if !defined(ORANGE386)
 #undef strchr
+#endif
 #undef new
 #ifdef load
 #undef load
 #endif
 #include "guest_ref.hpp"
+#if !defined(ORANGE386)
 extern "C" char *strchr(const char *, int);
+#endif
 
 using fdos_guest::lol_ref;
 using fdos_guest::mcb_ref;
@@ -224,7 +230,7 @@ STATIC void config_init_buffers_ex(int wantedbuffers, int allow_hma)
     printf("BUFFERS=%u not supported, reducing to 99\n", wantedbuffers);
     wantedbuffers = 99;
   }
-  if (wantedbuffers > buffers)   /* more specified than available -> get em */
+  if ((unsigned)wantedbuffers > buffers) /* more specified than available -> get em */
     buffers = wantedbuffers;
 
   config_lol.nbuffers() = buffers;
@@ -1588,7 +1594,7 @@ err:printf("%s has invalid format\n", filename);
     subf_count = pload16(cfg_guest_linear(x86_count));
     if (subf_count > 9 ||
         read(fd, x86_hdr, sizeof(struct subf_hdr) * subf_count) !=
-            sizeof(struct subf_hdr) * subf_count)
+            (int)(sizeof(struct subf_hdr) * subf_count))
       goto err;
     cfg_guest_read(cfg_guest_linear(x86_hdr), hdr,
                    sizeof(struct subf_hdr) * subf_count);

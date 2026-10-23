@@ -5,6 +5,11 @@
 
 #include "mem.h"
 
+#if defined(ORANGE386)
+/* native_devices.h: dhdr.arm.dh_interrupt holds a native device id here. */
+extern "C" void (*native_dev_intr_lookup(uint32_t id))(struct dos_far_ptr);
+#endif
+
 namespace fdos_guest {
 
 template <typename T>
@@ -31,6 +36,8 @@ class ref_base {
 protected:
 #if !defined(NO_PAGING)
     explicit constexpr ref_base(linear_t addr) : addr_(addr) {}
+#elif defined(ORANGE386)
+    explicit constexpr ref_base(linear_t addr) : addr_(addr) {}
 #else
     explicit ref_base(linear_t addr)
         : addr_(addr), native_(X86_RAM_BASE + addr) {}
@@ -49,7 +56,7 @@ protected:
             return static_cast<V>(pload32(a));
         }
 #else
-        return unaligned_load<V>(native_ + off);
+        return unaligned_load<V>(native() + off);
 #endif
     }
 
@@ -66,7 +73,7 @@ protected:
             pstore32(a, static_cast<uint32_t>(value));
         }
 #else
-        unaligned_store<V>(native_ + off, value);
+        unaligned_store<V>(native() + off, value);
 #endif
     }
 
@@ -81,8 +88,14 @@ protected:
     __attribute__((always_inline)) linear_t base_linear() const { return addr_; }
 
     linear_t addr_;
-#if defined(NO_PAGING)
+#if defined(NO_PAGING) && defined(ORANGE386)
+    /* Guest RAM is mapped at run time (platform_linux.c), after static
+       objects such as fatfs.cpp's media_req are constructed: resolve the
+       host address on every access instead of caching it. */
+    __attribute__((always_inline)) uint8_t *native() const { return X86_RAM_BASE + addr_; }
+#elif defined(NO_PAGING)
     uint8_t *native_;
+    __attribute__((always_inline)) uint8_t *native() const { return native_; }
 #endif
 };
 
@@ -111,8 +124,8 @@ public:
         pstore32(addr_ + offsetof(mcb, m_name), 0);
         pstore32(addr_ + offsetof(mcb, m_name) + 4, 0);
 #else
-        unaligned_store<uint32_t>(native_ + offsetof(mcb, m_name), 0u);
-        unaligned_store<uint32_t>(native_ + offsetof(mcb, m_name) + 4u, 0u);
+        unaligned_store<uint32_t>(native() + offsetof(mcb, m_name), 0u);
+        unaligned_store<uint32_t>(native() + offsetof(mcb, m_name) + 4u, 0u);
 #endif
     }
 
@@ -223,8 +236,8 @@ public:
     __attribute__((always_inline)) scalar_proxy<uint16_t> gs() const { return FDOS_CPU_REG_PROXY(uint16_t, offsetof(CPU_regs, gs)); }
     __attribute__((always_inline)) scalar_proxy<uint32_t> flags() const { return FDOS_CPU_REG_PROXY(uint32_t, offsetof(CPU_regs, flags)); }
 #undef FDOS_CPU_REG_PROXY
-    __attribute__((always_inline)) flag_proxy carry() const { return {addr_ + offsetof(CPU_regs, flags), 0x0001u}; }
-    __attribute__((always_inline)) flag_proxy zero() const { return {addr_ + offsetof(CPU_regs, flags), 0x0040u}; }
+    __attribute__((always_inline)) flag_proxy carry() const { return {addr_ + static_cast<linear_t>(offsetof(CPU_regs, flags)), 0x0001u}; }
+    __attribute__((always_inline)) flag_proxy zero() const { return {addr_ + static_cast<linear_t>(offsetof(CPU_regs, flags)), 0x0040u}; }
     __attribute__((always_inline)) void save_cpu(const CPU *cpu) const {
         for (unsigned i = 0; i < 8; ++i)
             r32(i) = cpu->gprx[i].r32;
@@ -301,21 +314,21 @@ private: linear_t addr_;
 class lol_ref final {
 public:
     explicit constexpr lol_ref(linear_t addr) : addr_(addr) {}
-    __attribute__((always_inline)) scalar_proxy<UWORD> first_mcb() const { return {addr_ + offsetof(lol, first_mcb)}; }
-    __attribute__((always_inline)) scalar_proxy<UWORD> nbuffers() const { return {addr_ + offsetof(lol, nbuffers)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> nblkdev() const { return {addr_ + offsetof(lol, nblkdev)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> lastdrive() const { return {addr_ + offsetof(lol, lastdrive)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> boot_drive() const { return {addr_ + offsetof(lol, BootDrive)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> cpu_family() const { return {addr_ + offsetof(lol, cpu)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> bufloc() const { return {addr_ + offsetof(lol, bufloc)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> uppermem_link() const { return {addr_ + offsetof(lol, uppermem_link)}; }
-    __attribute__((always_inline)) scalar_proxy<UWORD> uppermem_root() const { return {addr_ + offsetof(lol, uppermem_root)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> os_setver_major() const { return {addr_ + offsetof(lol, os_setver_major)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> os_setver_minor() const { return {addr_ + offsetof(lol, os_setver_minor)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> os_major() const { return {addr_ + offsetof(lol, os_major)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> os_minor() const { return {addr_ + offsetof(lol, os_minor)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> version_flags() const { return {addr_ + offsetof(lol, version_flags)}; }
-    __attribute__((always_inline)) scalar_proxy<UWORD> maxsecsize() const { return {addr_ + offsetof(lol, maxsecsize)}; }
+    __attribute__((always_inline)) scalar_proxy<UWORD> first_mcb() const { return {addr_ + static_cast<linear_t>(offsetof(lol, first_mcb))}; }
+    __attribute__((always_inline)) scalar_proxy<UWORD> nbuffers() const { return {addr_ + static_cast<linear_t>(offsetof(lol, nbuffers))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> nblkdev() const { return {addr_ + static_cast<linear_t>(offsetof(lol, nblkdev))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> lastdrive() const { return {addr_ + static_cast<linear_t>(offsetof(lol, lastdrive))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> boot_drive() const { return {addr_ + static_cast<linear_t>(offsetof(lol, BootDrive))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> cpu_family() const { return {addr_ + static_cast<linear_t>(offsetof(lol, cpu))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> bufloc() const { return {addr_ + static_cast<linear_t>(offsetof(lol, bufloc))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> uppermem_link() const { return {addr_ + static_cast<linear_t>(offsetof(lol, uppermem_link))}; }
+    __attribute__((always_inline)) scalar_proxy<UWORD> uppermem_root() const { return {addr_ + static_cast<linear_t>(offsetof(lol, uppermem_root))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> os_setver_major() const { return {addr_ + static_cast<linear_t>(offsetof(lol, os_setver_major))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> os_setver_minor() const { return {addr_ + static_cast<linear_t>(offsetof(lol, os_setver_minor))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> os_major() const { return {addr_ + static_cast<linear_t>(offsetof(lol, os_major))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> os_minor() const { return {addr_ + static_cast<linear_t>(offsetof(lol, os_minor))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> version_flags() const { return {addr_ + static_cast<linear_t>(offsetof(lol, version_flags))}; }
+    __attribute__((always_inline)) scalar_proxy<UWORD> maxsecsize() const { return {addr_ + static_cast<linear_t>(offsetof(lol, maxsecsize))}; }
 
     __attribute__((always_inline)) dos_far_ptr far_value(std::size_t off) const {
         const UWORD offset = scalar_proxy<UWORD>(addr_ + static_cast<uint32_t>(off));
@@ -869,36 +882,40 @@ public:
         return scalar_load<UWORD>(offsetof(dhdr, x86.dh_interrupt));
     }
     __attribute__((always_inline)) native_interrupt_t native_interrupt() const {
+#if defined(ORANGE386)
+        return native_dev_intr_lookup(scalar_load<uint32_t>(offsetof(dhdr, arm.dh_interrupt)));
+#else
         const uintptr_t p = static_cast<uintptr_t>(scalar_load<uint32_t>(offsetof(dhdr, arm.dh_interrupt)));
         return reinterpret_cast<native_interrupt_t>(p);
+#endif
     }
 };
 
 class dos_data_ref final {
 public:
     explicit constexpr dos_data_ref(linear_t addr) : addr_(addr) {}
-    __attribute__((always_inline)) scalar_proxy<UWORD> cu_psp() const { return {addr_+offsetof(dos_data,cu_psp)}; }
-    __attribute__((always_inline)) scalar_proxy<UWORD> int21ax() const { return {addr_+offsetof(dos_data,Int21AX)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> mem_access_mode() const { return {addr_+offsetof(dos_data,mem_access_mode)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> break_ena() const { return {addr_+offsetof(dos_data,break_ena)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> indos() const { return {addr_+offsetof(dos_data,InDOS)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> error_mode() const { return {addr_+offsetof(dos_data,ErrorMode)}; }
-    __attribute__((always_inline)) scalar_proxy<UWORD> crit_err_code() const { return {addr_+offsetof(dos_data,CritErrCode)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> default_drive() const { return {addr_+offsetof(dos_data,default_drive)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> open_mode() const { return {addr_+offsetof(dos_data,OpenMode)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> switchar() const { return {addr_+offsetof(dos_data,switchar)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> verify_ena() const { return {addr_+offsetof(dos_data,verify_ena)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> abort_progress() const { return {addr_+offsetof(dos_data,abort_progress)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> crit_err_drive() const { return {addr_+offsetof(dos_data,CritErrDrive)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> crit_err_locus() const { return {addr_+offsetof(dos_data,CritErrLocus)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> crit_err_class() const { return {addr_+offsetof(dos_data,CritErrClass)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> crit_err_action() const { return {addr_+offsetof(dos_data,CritErrAction)}; }
-    __attribute__((always_inline)) scalar_proxy<UWORD> current_sft_idx() const { return {addr_+offsetof(dos_data,current_sft_idx)}; }
-    __attribute__((always_inline)) scalar_proxy<UWORD> clock_days() const { return {addr_+offsetof(dos_data,ClkRecord)+offsetof(ClockRecord,clkDays)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> clock_minutes() const { return {addr_+offsetof(dos_data,ClkRecord)+offsetof(ClockRecord,clkMinutes)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> clock_hours() const { return {addr_+offsetof(dos_data,ClkRecord)+offsetof(ClockRecord,clkHours)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> clock_hundredths() const { return {addr_+offsetof(dos_data,ClkRecord)+offsetof(ClockRecord,clkHundredths)}; }
-    __attribute__((always_inline)) scalar_proxy<UBYTE> clock_seconds() const { return {addr_+offsetof(dos_data,ClkRecord)+offsetof(ClockRecord,clkSeconds)}; }
+    __attribute__((always_inline)) scalar_proxy<UWORD> cu_psp() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,cu_psp))}; }
+    __attribute__((always_inline)) scalar_proxy<UWORD> int21ax() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,Int21AX))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> mem_access_mode() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,mem_access_mode))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> break_ena() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,break_ena))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> indos() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,InDOS))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> error_mode() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,ErrorMode))}; }
+    __attribute__((always_inline)) scalar_proxy<UWORD> crit_err_code() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,CritErrCode))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> default_drive() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,default_drive))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> open_mode() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,OpenMode))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> switchar() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,switchar))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> verify_ena() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,verify_ena))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> abort_progress() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,abort_progress))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> crit_err_drive() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,CritErrDrive))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> crit_err_locus() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,CritErrLocus))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> crit_err_class() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,CritErrClass))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> crit_err_action() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,CritErrAction))}; }
+    __attribute__((always_inline)) scalar_proxy<UWORD> current_sft_idx() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,current_sft_idx))}; }
+    __attribute__((always_inline)) scalar_proxy<UWORD> clock_days() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,ClkRecord)+offsetof(ClockRecord,clkDays))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> clock_minutes() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,ClkRecord)+offsetof(ClockRecord,clkMinutes))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> clock_hours() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,ClkRecord)+offsetof(ClockRecord,clkHours))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> clock_hundredths() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,ClkRecord)+offsetof(ClockRecord,clkHundredths))}; }
+    __attribute__((always_inline)) scalar_proxy<UBYTE> clock_seconds() const { return {addr_+static_cast<linear_t>(offsetof(dos_data,ClkRecord)+offsetof(ClockRecord,clkSeconds))}; }
     __attribute__((always_inline)) dos_far_ptr dta() const { return far_load(offsetof(dos_data,dta)); }
     __attribute__((always_inline)) void dta(dos_far_ptr v) const { far_store(offsetof(dos_data,dta),v); }
     __attribute__((always_inline)) dos_far_ptr crit_err_dev() const { return far_load(offsetof(dos_data,CritErrDev)); }

@@ -15,6 +15,16 @@
 #define NDEV            26      /* up to Z:                     */
 
 #define open        init_DosOpen
+#if defined(ORANGE386)
+/* The init-time file helpers below are named after their POSIX
+   counterparts.  On the Linux host those external names belong to libc and
+   are called by the emulator itself and by ALSA/libdrm, so the kernel's
+   helpers must not define them. */
+#define read        init_DosRead
+#define close       init_DosClose
+#define lseek       init_DosLseek
+#define dup2        init_DosDup2
+#endif
 
 /*
  00000H 000FFH 00100H PSP                PSP

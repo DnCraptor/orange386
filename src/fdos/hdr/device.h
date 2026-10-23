@@ -145,7 +145,14 @@ struct dhdr {
     union {
       struct {
         // no dh_strategy support for native drivers
+#if defined(ORANGE386)
+        /* LP64 host: a native function pointer does not fit the 4-byte slot
+           of the 18-byte .SYS header.  The slot holds a native_dev_id
+           (native_devices.h) instead. */
+        UDWORD dh_interrupt;
+#else
         VOID(*dh_interrupt)(dos_far_ptr rq);
+#endif
       } arm;
       struct {
         UWORD dh_strategy;    /* offset, within this header's own segment */
@@ -232,8 +239,8 @@ struct _bios_LBA_address_packet
   unsigned char reserved_1;     /* set to 0...unused                */
   UWORD number_of_blocks;       /* EDD DAP +02h: 16-bit sector count */
   dos_far_ptr buffer_address;    /* addr of transfer buffer          */
-  unsigned long block_address;  /* LBA address                      */
-  unsigned long block_address_high;     /* high bytes of LBA addr...unused  */
+  UDWORD block_address;         /* LBA address                      */
+  UDWORD block_address_high;            /* high bytes of LBA addr...unused  */
 };
 
 struct CHS {

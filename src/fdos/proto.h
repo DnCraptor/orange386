@@ -256,7 +256,7 @@ UCOUNT res_read(CPU* cpu, int fd, dos_far_ptr buf, UCOUNT count);
 #endif
 
 /* ioctl.c */
-COUNT DosDevIOctl();
+COUNT DosDevIOctl(void);
 
 /* memmgr.c */
 seg far2para(VOID FAR * p);
@@ -345,7 +345,10 @@ int /*ASMCFUNC*/ ASMPASCAL strcmp(const char * d, const char * s);
 #define fstrcmp strcmp
 int /*ASMCFUNC*/ ASMPASCAL fstrncmp(const char FAR * d, const char FAR * s, size_t l);
 int /*ASMCFUNC*/ ASMPASCAL strncmp(const char * d, const char * s, size_t l);
+#if !(defined(ORANGE386) && defined(__cplusplus))
+/* glibc's <string.h> already declares the const-correct C++ overloads. */
 char * /*ASMCFUNC*/ ASMPASCAL strchr(const char * s, int c);
+#endif
 char FAR * /*ASMCFUNC*/ ASMPASCAL fstrchr(const char FAR * s, int c);
 #define fmemchr memchr
 

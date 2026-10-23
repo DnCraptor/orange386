@@ -131,7 +131,7 @@ _first_mcb      dw      0               ;-0002 Start of user memory
   unsigned char version_flags; /* 6f DOS version flags                    */
   dos_short_ptr os_release;    /* 70 near pointer to os_release string    */
   unsigned short winInstanced; /* WinInit called                          */
-  unsigned long  winStartupInfo[4];
+  UDWORD winStartupInfo[4];
   unsigned short instanceTable[5];
   char os_release_str[12];
   char aux_str[4];

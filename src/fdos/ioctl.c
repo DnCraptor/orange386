@@ -70,7 +70,7 @@ STATIC const UBYTE cmd [] = {
   /* 0x11 */ C_IOCTLQRY,
 };
 
-int DosDevIOctl(lregs * r)
+COUNT DosDevIOctl(void)
 {
   const dos_far_ptr rq_far = fdos_sda_request_far(offsetof(struct dos_data, ClkReqHdr));
   const fdos_request_guest_ref rq = fdos_request_guest(rq_far);

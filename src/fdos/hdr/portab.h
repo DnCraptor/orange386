@@ -175,7 +175,8 @@ static inline unsigned short getSS(void)
 }
 extern char DosDataSeg[];
 #else
-  #ifdef PICO_RP2350
+  #if defined(PICO_RP2350) || defined(ORANGE386)
+    /* ORANGE386: the same flat guest-memory model on an ARM64 Linux host. */
     #define ARM_M33
   #else
     /* for warnings only ! */
@@ -185,6 +186,23 @@ extern char DosDataSeg[];
 
 #ifdef ARM_M33
 
+#if defined(ORANGE386)
+/* Guest physical memory is a host mapping (platform_linux.c), not PSRAM at
+   a fixed bus address. */
+extern uint8_t *guest_ram_base;
+#define PSRAM_BASE_ADDR   ((uintptr_t)guest_ram_base)
+#define X86_RAM_BASE (guest_ram_base)
+/* newlib's <sys/cdefs.h> maps C11 _Static_assert to static_assert in C++;
+   glibc's does not. */
+#if defined(__cplusplus) && !defined(_Static_assert)
+#define _Static_assert static_assert
+#endif
+/* newlib extension used by the kernel; glibc lacks it (platform_linux.c). */
+#ifdef __cplusplus
+extern "C"
+#endif
+char *strupr(char *s);
+#else
 #ifndef PSRAM_BASE_ADDR
 #define PSRAM_BASE_ADDR   0x11000000
 #endif
@@ -194,6 +212,7 @@ extern uint8_t *guest_ram_base;
 #include "ega128_paging.h"
 #else
 #define X86_RAM_BASE ((uint8_t *)PSRAM_BASE_ADDR)
+#endif
 #endif
 
 /* Shared DOS canonical-path buffer size.  Keep truename() and callers that
@@ -526,11 +545,22 @@ typedef int BOOL;
 /*                                                              */
 typedef char BYTE;
 typedef short WORD;
+#if defined(ORANGE386)
+/* LP64 host: long is 64 bits wide there.  DOS 32-bit quantities must stay
+   32 bits - they are laid out in guest-visible structures (SFT, DPB, SDA,
+   LoL) whose sizes and offsets are asserted. */
+typedef int32_t DWORD;
+#else
 typedef long DWORD;
+#endif
 
 typedef unsigned char UBYTE;
 typedef unsigned short UWORD;
+#if defined(ORANGE386)
+typedef uint32_t UDWORD;
+#else
 typedef unsigned long UDWORD;
+#endif
 
 typedef short SHORT;
 
@@ -538,10 +568,18 @@ typedef unsigned int BITS;      /* for use in bit fields(!)     */
 
 typedef int COUNT;
 typedef unsigned int UCOUNT;
+#if defined(ORANGE386)
+typedef uint32_t ULONG;
+#else
 typedef unsigned long ULONG;
+#endif
 
 #ifdef WITHFAT32
+#if defined(ORANGE386)
+typedef uint32_t CLUSTER;
+#else
 typedef unsigned long CLUSTER;
+#endif
 #else
 typedef unsigned short CLUSTER;
 #endif
@@ -559,7 +597,9 @@ typedef char FAR *ADDRESS;
 typedef void FAR *ADDRESS;
 #endif
 
-#ifdef STRICT
+#if defined(ORANGE386)
+typedef int32_t LONG;
+#elif defined(STRICT)
 typedef signed long LONG;
 #else
 #define LONG long

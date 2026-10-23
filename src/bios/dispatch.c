@@ -3,6 +3,7 @@
 #include "i386.h"
 #include "286/cpu.h"
 #include "bios/bios.h"
+#include "fdos/fdos.h"
 
 /*
  * Native BIOS handler table and escape-stub dispatch.
@@ -112,73 +113,50 @@ void cpu_pending_trap_set(bool v)  { pending_ss_trap = v; }
 bool cpu_irq_shadow(const CPU* cpu) { return cpu->i286_irq_shadow; }
 void cpu_irq_shadow_set(CPU* cpu, bool v) { cpu->i286_irq_shadow = v; }
 
-#if !NATIVE_DOS
-/*
- * Provided by the native DOS kernel in murm386 (fdos/task.c, fdos/kernel.c).
- * Until that kernel is built here, nothing can request a native process
- * termination, and INT 33h user handlers still need the far-call helper.
- */
-bool terminate_requested(void)
-{
-    return false;
+
+void cpu_install_dos_handlers(CPU* cpu) {
+    (void)cpu;
+    handlers[0x20] = fdos_20h; // old-style (CP/M) terminate
+	pstore16(0x20*4, NATIVE_BIOS_STUB_OFF_FOR(0x20));
+	pstore16(0x20*4 + 2, NATIVE_BIOS_STUB_SEG);
+
+    handlers[0x21] = fdos_21h; // main DOS handler
+	pstore16(0x21*4, NATIVE_BIOS_STUB_OFF_FOR(0x21));
+	pstore16(0x21*4 + 2, NATIVE_BIOS_STUB_SEG);
+
+    handlers[0x25] = fdos_25h; // absolute disk read
+	pstore16(0x25*4, NATIVE_BIOS_STUB_OFF_FOR(0x25));
+	pstore16(0x25*4 + 2, NATIVE_BIOS_STUB_SEG);
+
+    handlers[0x26] = fdos_26h; // absolute disk write
+	pstore16(0x26*4, NATIVE_BIOS_STUB_OFF_FOR(0x26));
+	pstore16(0x26*4 + 2, NATIVE_BIOS_STUB_SEG);
+
+    handlers[0x27] = fdos_27h; // old-style TSR
+	pstore16(0x27*4, NATIVE_BIOS_STUB_OFF_FOR(0x27));
+	pstore16(0x27*4 + 2, NATIVE_BIOS_STUB_SEG);
+
+    handlers[0x28] = fdos_28h; // DOS idle
+	pstore16(0x28*4, NATIVE_BIOS_STUB_OFF_FOR(0x28));
+	pstore16(0x28*4 + 2, NATIVE_BIOS_STUB_SEG);
+
+    handlers[0x29] = fdos_29h; // fast console output.
+	pstore16(0x29*4, NATIVE_BIOS_STUB_OFF_FOR(0x29));
+	pstore16(0x29*4 + 2, NATIVE_BIOS_STUB_SEG);
+
+    handlers[0x2F] = fdos_2fh; // XMS
+	pstore16(0x2f*4, NATIVE_BIOS_STUB_OFF_FOR(0x2f));
+	pstore16(0x2f*4 + 2, NATIVE_BIOS_STUB_SEG);
+
+    /*
+     * CP/M CALL-5 gateway. This is NOT a software INT 30h: PSP:0005h does
+     * CALL FAR 0000:00C0, and 0000:00C0 (written in PSPInit) is a JMP FAR to
+     * the handler-30h native escape stub. Landing there dispatches here. fdos_30h()
+     * consumes the far-call frame itself and returns false, so the common
+     * IRET path is not applied.
+     */
+    handlers[0x30] = fdos_30h;
 }
-
-extern struct PC* pc;
-void pc_step(struct PC* pc, size_t max_ops);
-
-/* cpu_far_call_waiter() - fired when the CPU reaches back the synthetic
-   return address pushed by cpu_far_call() (the callee did RETF).  A
-   CALL/RETF pair never expects a flags-restoring IRET at the trap address,
-   so this always returns false. */
-static bool cpu_far_call_waiter(CPU* cpu, bios_callback_params_t* params) {
-    if (!params->done) {
-        ifl = 0; // no IRQ allowed this time
-        params->done = true;
-        cpu->native_done = true;
-    }
-    return false;
-}
-
-/* cpu_far_call(cpu, seg, off) - synchronously CALL FAR seg:off in guest
-   code and wait for it to RETF back: push a return CS:IP that aliases the
-   native callback sentinel at physical FFEFF (bios_FFh.c), set CS:IP to the
-   target and run the CPU until its 0F FF FF escape reports the RETF. */
-void cpu_far_call(CPU* cpu, uint16_t seg, uint16_t off)
-{
-    uint16_t save_cs = CPU_CS, save_ip = CPU_IP;
-    bios_callback_params_t params = {
-        .callback = cpu_far_call_waiter,
-        .expected_cs = 0xFFEF,
-        .expected_ip = 0x000F,
-        .done = false,
-    };
-    /* См. bios_intcall(): native_done стекуется, внешнее состояние
-       восстанавливается после вложенного цикла. */
-    bool old_native_done = cpu->native_done;
-    bool old_irq_shadow = cpu_irq_shadow(cpu);
-    cpu->native_done = false;
-    cpu_irq_shadow_set(cpu, false);
-    set_bios_callback(cpu, &params, true);
-    /* Emulate exactly what "CALL FAR seg:off" pushes: CS, then IP (so
-       that RETF - which pops IP, then CS - lands back here). */
-    CPU_SP -= 2;
-    putmem8(CPU_SS, CPU_SP, params.expected_cs & 0xff);
-    putmem8(CPU_SS, (CPU_SP + 1) & 0xffff, params.expected_cs >> 8);
-    CPU_SP -= 2;
-    putmem8(CPU_SS, CPU_SP, params.expected_ip & 0xff);
-    putmem8(CPU_SS, (CPU_SP + 1) & 0xffff, params.expected_ip >> 8);
-
-    SET_CS(seg);
-    SET_IP(off);
-    while (!params.done)
-        pc_step(pc, 4096);
-    cpu->native_done = old_native_done;
-    drop_bios_callback(cpu, &params);
-    cpu_irq_shadow_set(cpu, old_irq_shadow);
-    SET_CS(save_cs);
-    SET_IP(save_ip);
-}
-#endif /* !NATIVE_DOS */
 
 /* murm386: rp2350_bios_handler() */
 bool native_bios_dispatch(CPU* cpu, uint8_t intnum)

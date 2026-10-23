@@ -8,14 +8,6 @@
 
 #define BOOT_ADDR 0x07C00u
 
-#if ORANGE386 && !NATIVE_DOS
-/* The native FreeDOS kernel (src/fdos) is not built for the Linux host yet:
- * INT 19h always boots the guest's own boot sector. */
-#define native_dos_selected() false
-#else
-#define native_dos_selected() (config_get_native_dos() != 0)
-#endif
-
 static int read_boot_sector(FIL *f)
 {
     UINT br = 0;
@@ -176,7 +168,6 @@ static void boot_from(CPU* cpu, uint8_t dl, bool native)
     SET_IP ( BOOT_ADDR );
     SET_SS ( 0x0000 );
     CPU_SP = BOOT_ADDR;
-#if !ORANGE386 || NATIVE_DOS
     if (native) {
         /* Native FreeDOS kernel.  Guest mode returns to bios_19h(), whose
          * false result transfers execution directly to 0000:7C00. */
@@ -184,9 +175,6 @@ static void boot_from(CPU* cpu, uint8_t dl, bool native)
         kernel(cpu);
         __unreachable();
     }
-#else
-    (void)native;
-#endif
 }
 
 /* TODO:
@@ -236,7 +224,7 @@ bool bios_19h(CPU* cpu) {
     drop_bios_callback(cpu, &params);
     params.done = false;
 
-    const bool native = native_dos_selected();
+    const bool native = config_get_native_dos() != 0;
 
     /* Classic boot order used here: floppy A:, then first fixed disk C:.
     * No POST is done here; INT 19h is only bootstrap. */

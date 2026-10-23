@@ -11,8 +11,15 @@
 #define printf(...) dos_printf(__VA_ARGS__)
 CPU* cpu;
 
+#if defined(ORANGE386)
+/* glibc spells the format attribute without newlib's _ATTRIBUTE macro.
+   <stdio.h> itself is not included: its SEEK_* clash with hdr/sft.h. */
+int	vsnprintf (char *__restrict, size_t, const char *__restrict, __gnuc_va_list)
+               __attribute__ ((__format__ (__printf__, 3, 0)));
+#else
 int	vsnprintf (char *__restrict, size_t, const char *__restrict, __gnuc_va_list)
                _ATTRIBUTE ((__format__ (__printf__, 3, 0)));
+#endif
 
 /*
     put_console()/put_string()/put_unsigned() - the prf.c primitives.
@@ -368,84 +375,84 @@ void keycheck(void)
 static const struct dhdr _blk_dev = {
     .dh_next = MK_FP(-1, -1),
     .dh_attr = 0x08c2 | ATTR_NATIVE,
-    .arm.dh_interrupt = BlkEntry,
+    .arm.dh_interrupt = NATIVE_DEV_INTR(BlkEntry),
     .dh_name = { 4, 0, 0, 0, 0, 0, 0, 0 },
 };
 
 static const struct dhdr _clk_dev = {
     .dh_next = x86_blk_dev,
     .dh_attr = 0x8008 | ATTR_NATIVE,
-    .arm.dh_interrupt = ClkEntry,
+    .arm.dh_interrupt = NATIVE_DEV_INTR(ClkEntry),
     .dh_name = "CLOCK$  "
 };
 
 static const struct dhdr _com4_dev = {
     .dh_next = x86_clk_dev,
     .dh_attr = 0x8000 | ATTR_NATIVE,
-    .arm.dh_interrupt = Com4Intr,
+    .arm.dh_interrupt = NATIVE_DEV_INTR(Com4Intr),
     .dh_name = "COM4    "
 };
 
 static const struct dhdr _com3_dev = {
     .dh_next = x86_com4_dev,
     .dh_attr = 0x8000 | ATTR_NATIVE,
-    .arm.dh_interrupt = Com3Intr,
+    .arm.dh_interrupt = NATIVE_DEV_INTR(Com3Intr),
     .dh_name = "COM3    "
 };
 
 static const struct dhdr _com2_dev = {
     .dh_next = x86_com3_dev,
     .dh_attr = 0x8000 | ATTR_NATIVE,
-    .arm.dh_interrupt = Com2Intr,
+    .arm.dh_interrupt = NATIVE_DEV_INTR(Com2Intr),
     .dh_name = "COM2    "
 };
 
 static const struct dhdr _com1_dev = {
     .dh_next = x86_com2_dev,
     .dh_attr = 0x8000 | ATTR_NATIVE,
-    .arm.dh_interrupt = AuxIntr,
+    .arm.dh_interrupt = NATIVE_DEV_INTR(AuxIntr),
     .dh_name = "COM1    "
 };
 
 static const struct dhdr _lpt3_dev = {
     .dh_next = x86_com1_dev,
     .dh_attr = 0xA040 | ATTR_NATIVE,
-    .arm.dh_interrupt = Lpt3Intr,
+    .arm.dh_interrupt = NATIVE_DEV_INTR(Lpt3Intr),
     .dh_name = "LPT3    "
 };
 
 static const struct dhdr _lpt2_dev = {
     .dh_next = x86_lpt3_dev,
     .dh_attr = 0xA040 | ATTR_NATIVE,
-    .arm.dh_interrupt = Lpt2Intr,
+    .arm.dh_interrupt = NATIVE_DEV_INTR(Lpt2Intr),
     .dh_name = "LPT2    "
 };
 
 static const struct dhdr _lpt1_dev = {
     .dh_next = x86_lpt2_dev,
     .dh_attr = 0xA040 | ATTR_NATIVE,
-    .arm.dh_interrupt = Lpt1Intr,
+    .arm.dh_interrupt = NATIVE_DEV_INTR(Lpt1Intr),
     .dh_name = "LPT1    "
 };
 
 static const struct dhdr _aux_dev = {
     .dh_next = x86_lpt1_dev,
     .dh_attr = 0x8000 | ATTR_NATIVE,
-    .arm.dh_interrupt = AuxIntr,
+    .arm.dh_interrupt = NATIVE_DEV_INTR(AuxIntr),
     .dh_name = "AUX     "
 };
 
 static const struct dhdr _prn_dev = {
     .dh_next = x86_aux_dev,
     .dh_attr = 0xA040 | ATTR_NATIVE,
-    .arm.dh_interrupt = PrnIntr,
+    .arm.dh_interrupt = NATIVE_DEV_INTR(PrnIntr),
     .dh_name = "PRN     "
 };
 
 static const struct dhdr _con_dev = {
     .dh_next = x86_prn_dev,
     .dh_attr = 0x8013 | ATTR_NATIVE,
-    .arm.dh_interrupt = ConIntr,
+    .arm.dh_interrupt = NATIVE_DEV_INTR(ConIntr),
     .dh_name = "CON     "
 };
 
@@ -477,7 +484,7 @@ static const struct lol lol = {
     .nul_dev = {
         .dh_next = x86_con_dev,
         .dh_attr = 0x8004 | ATTR_NATIVE,
-        .arm.dh_interrupt = NulIntr,
+        .arm.dh_interrupt = NATIVE_DEV_INTR(NulIntr),
         .dh_name = "NUL     "
     },
 
@@ -1340,7 +1347,7 @@ static void __not_in_flash_func(guest_lin_set)(uint32_t lin, int v, size_t n) {
     }
 }
 
-void __not_in_flash_func(fmemset)(dos_far_ptr p, int v, unsigned int sz) {
+void __not_in_flash_func(fmemset)(dos_far_ptr p, int v, size_t sz) {
     uint16_t seg = FP_SEG(p), off = FP_OFF(p);
     size_t n = sz;
 
@@ -2572,7 +2579,7 @@ STATIC void init_kernel(CPU* cpu)
       unsigned guard = 0;
 
       while (!far_is_end(_dpb) && !far_is_null(_dpb) &&
-             guard++ < kernel_lol_read8(offsetof(struct lol, nblkdev)) + 4) {
+             guard++ < kernel_lol_read8(offsetof(struct lol, nblkdev)) + 4u) {
         struct dpb d;
         kernel_guest_read(kernel_guest_linear(_dpb), &d, sizeof(d));
         drv_watch_capture("after-DoConfig2-dpb-device", d.dpb_device, NULL);

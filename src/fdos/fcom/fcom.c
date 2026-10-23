@@ -2124,6 +2124,18 @@ static unsigned fcom_environment_used(UWORD command_psp)
   return used;
 }
 
+/*
+ * strcpy() between two fcom_guest_layout buffers.  Both are reached as
+ * X86_RAM_BASE + (32-bit guest linear address); with the linear sum allowed
+ * to wrap, GCC's -Wrestrict cannot prove that two distinct fields never
+ * overlap and flags glibc's fortified strcpy().  memmove() carries no such
+ * contract and copies the same bytes.
+ */
+static inline void fcom_guest_strcpy(char *dst, const char *src)
+{
+  memmove(dst, src, strlen(src) + 1);
+}
+
 static void fcom_uppercase(char *text)
 {
   while (*text != '\0') {
@@ -2212,7 +2224,7 @@ static int fcom_set_execute(CPU *cpu, UWORD command_psp,
 
   if (strlen(g.pipe_temp()) >= decltype(g.path())::size())
     return 0;
-  strcpy(g.path(), g.pipe_temp());
+  fcom_guest_strcpy(g.path(), g.pipe_temp());
 
   SET_DS(command_psp);
   CPU_DX = FCOM_WORK_OFFSET + (UWORD)offsetof(struct fcom_guest_layout, path);
@@ -3641,7 +3653,7 @@ static int __hfa_func(make_delete_name)(const fcom_guest_ref &g,
   } else {
     if (strlen(found) >= decltype(g.path2())::size())
       return 0;
-    strcpy(g.path2(), found);
+    fcom_guest_strcpy(g.path2(), found);
   }
 
   return 1;
@@ -5855,17 +5867,25 @@ static int fcom_copy_group(CPU *cpu, UWORD command_psp,
       }
 
       {
+        /* Format outside guest RAM: with both text and path2 reached
+           through X86_RAM_BASE, GCC cannot rule out that they overlap
+           (-Wrestrict).  This also keeps a truncated line within text. */
         auto path2 = g.path2();
-        int n = snprintf(g.text(), decltype(g.text())::size(),
+        char line[decltype(g.text())::size()];
+        int n = snprintf(line, sizeof(line),
                          "%s %s %s\r\n", source_path,
                          (append_destination || i != first)
                              ? "=>>" : "=>",
                          static_cast<const char *>(path2));
-        if (n > 0)
+        if (n > 0) {
+          if ((size_t)n >= sizeof(line))
+            n = (int)sizeof(line) - 1;
+          memcpy(g.text(), line, (size_t)n);
           (void)fcom_write(cpu, command_psp,
               FCOM_WORK_OFFSET +
                 (UWORD)offsetof(struct fcom_guest_layout, text),
               (UWORD)n);
+        }
       }
 
       rc = fcom_copy_stream(cpu, command_psp, g,
@@ -7371,7 +7391,7 @@ static int exec_external(CPU *cpu, UWORD command_psp, const fcom_guest_ref &g,
   char *path_storage = NULL;
 
   build_tail(g, args);
-  strcpy(g.program(), g.filename());
+  fcom_guest_strcpy(g.program(), g.filename());
 
   /*
    * INT 21h/AH=0Ah leaves the entered command visible on the current

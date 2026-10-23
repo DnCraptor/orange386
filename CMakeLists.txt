@@ -6,6 +6,10 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 #set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG")
 set(CMAKE_C_FLAGS_RELEASE "-O3 -g")
+# C++ sources (FreeDOS kernel parts, emu8950 slot renderer), as in murm386
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBDRM REQUIRED IMPORTED_TARGET libdrm)
@@ -52,6 +56,40 @@ add_executable(orange386
     src/font8x8.c
     src/font8x14.c
 
+    # Native FreeDOS kernel and FreeCOM shell (bios=native, BOOT=Native)
+    src/fdos/boot.c
+    src/fdos/intr.c
+    src/fdos/initclk.c
+    src/fdos/initdisk.c
+    src/fdos/dyninit.c
+    src/fdos/config.cpp
+    src/fdos/memmgr.cpp
+    src/fdos/inithma.c
+    src/fdos/dsk.cpp
+    src/fdos/dosfns.cpp
+    src/fdos/fcbfns.c
+    src/fdos/lfnapi.c
+    src/fdos/lfn_guest_proxy.cpp
+    src/fdos/fatfs.cpp
+    src/fdos/fattab.cpp
+    src/fdos/fatdir.cpp
+    src/fdos/blockio.cpp
+    src/fdos/chario.c
+    src/fdos/kernel.c
+    src/fdos/native_devices.cpp
+    src/fdos/kernel_guest_proxy.cpp
+    src/fdos/mcb_proxy.cpp
+    src/fdos/task.c
+    src/fdos/fcom/fcom.c
+    src/fdos/fcom/fcom_guest.cpp
+    src/fdos/nls.c
+    src/fdos/ioctl.c
+    src/fdos/ioctl_guest_proxy.cpp
+    src/fdos/fdos_21h.cpp
+    src/fdos/fdos_2528.c
+    src/fdos/fdos_29h.c
+    src/fdos/fdos_2fh.c
+
     # Devices
     src/vga.c        # VGA emulation
     src/disk.c       # INT 13h disk handler (from pico-286)
@@ -83,6 +121,9 @@ add_executable(orange386
     # Configuration
     src/ini.c
 )
+# FreeCOM's bootstrap is C++ in a .c file (as in murm386).
+set_source_files_properties(src/fdos/fcom/fcom.c PROPERTIES LANGUAGE CXX)
+
 find_package(Threads REQUIRED)
 target_link_libraries(orange386 PRIVATE PkgConfig::LIBDRM PkgConfig::ALSA Threads::Threads m)
 target_compile_options(orange386 PRIVATE
@@ -91,15 +132,18 @@ target_compile_options(orange386 PRIVATE
     -Wno-unused-variable
     -Wno-unused-parameter
     $<$<COMPILE_LANGUAGE:C>:-Wno-old-style-declaration>
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
 )
 target_include_directories(orange386 PUBLIC src)
 target_compile_definitions(orange386 PRIVATE
     _POSIX_C_SOURCE=200809L
     _DEFAULT_SOURCE=1
     ORANGE386=1
-    # Native FreeDOS kernel (src/fdos) is not built yet: native BIOS boots
-    # guest media only.
-    NATIVE_DOS=0
+    # Native FreeDOS kernel (src/fdos), as configured in murm386
+    QUIET=1
+    WITHFAT32=1
+    WITHLFNAPI=1
     NO_PAGING=1
     VGA256=1
     I386_MODE=1

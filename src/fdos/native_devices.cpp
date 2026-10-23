@@ -36,6 +36,28 @@ UWORD DaysSinceEpoch = 0;
 
 } // namespace
 
+#if defined(ORANGE386)
+extern "C" native_dev_intr_t native_dev_intr_lookup(UDWORD id)
+{
+    static const native_dev_intr_t table[NATIVE_DEV_COUNT] = {
+        [NATIVE_DEV_NONE]     = nullptr,
+        [NATIVE_DEV_ConIntr]  = ConIntr,
+        [NATIVE_DEV_PrnIntr]  = PrnIntr,
+        [NATIVE_DEV_AuxIntr]  = AuxIntr,
+        [NATIVE_DEV_Lpt1Intr] = Lpt1Intr,
+        [NATIVE_DEV_Lpt2Intr] = Lpt2Intr,
+        [NATIVE_DEV_Lpt3Intr] = Lpt3Intr,
+        [NATIVE_DEV_Com2Intr] = Com2Intr,
+        [NATIVE_DEV_Com3Intr] = Com3Intr,
+        [NATIVE_DEV_Com4Intr] = Com4Intr,
+        [NATIVE_DEV_ClkEntry] = ClkEntry,
+        [NATIVE_DEV_BlkEntry] = BlkEntry,
+        [NATIVE_DEV_NulIntr]  = NulIntr,
+    };
+    return id < NATIVE_DEV_COUNT ? table[id] : nullptr;
+}
+#endif
+
 extern "C" int fdos_native_execrh(dos_far_ptr dhp, dos_far_ptr rq_far,
                                      UWORD *status)
 {
@@ -106,7 +128,7 @@ extern "C" void ConIntr(dos_far_ptr rq_far)
             rq.status(S_DONE | S_BUSY);
         } else {
             BYTE ch = CPU_AL;
-            if (ch == 0xE0 && CPU_AH != 0)
+            if ((UBYTE)ch == 0xE0 && CPU_AH != 0)
                 ch = 0;
             rq.ndbyte(ch);
             rq_done(rq);
@@ -150,7 +172,7 @@ extern "C" void ConIntr(dos_far_ptr rq_far)
                         ch = 0x10;
                     } else {
                         ch = CPU_AL;
-                        if (ch == 0xE0 && CPU_AH != 0)
+                        if ((UBYTE)ch == 0xE0 && CPU_AH != 0)
                             ch = 0;
                         if (ch == 0 && CPU_AH != 0)
                             con_scan_code = CPU_AH;

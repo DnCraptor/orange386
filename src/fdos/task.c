@@ -24,7 +24,19 @@
 #include "fcom/fcom.h"
 #include "../diag.h"
 #include "../core0_stack.h"
+
+/* Native ARM applications (ELF/EZ) are RP2350 Thumb code loaded into PSRAM.
+   The ARM64 Linux host cannot execute them, so their loaders and runtime are
+   not built there and EXEC rejects such files. */
+#if defined(ORANGE386)
+#define ARM_NATIVE_APPS 0
+#else
+#define ARM_NATIVE_APPS 1
+#endif
+
+#if ARM_NATIVE_APPS
 #include "../../apps/api/ez.h"
+#endif
 #include "../mem.h"
 #include "mcb_proxy.h"
 #include "kernel_guest_proxy.h"
@@ -49,9 +61,10 @@ extern volatile uint32_t dos_diag_kernel_code;
  * clock without importing the full pc.h include graph.
  */
 extern struct PC *pc;
-void pc_step(struct PC *pc, int stepcount);
+void pc_step(struct PC *pc, size_t max_ops);
 void pc_service(struct PC *pc);
 uint32_t get_uticks(void);
+#if ARM_NATIVE_APPS
 size_t psram_usable_size(void);
 
 static BOOL arm_native_runtime_available(void)
@@ -68,6 +81,7 @@ static BOOL arm_native_runtime_available(void)
    Keep the conversion centralized so generic FDOS code cannot accidentally
    reintroduce persistent ARM_PTR() aliases. */
 #define arm_native_guest_ptr(p) ((void*)ARM_PTR(p))
+#endif /* ARM_NATIVE_APPS */
 
 /* Native-yield IRQ trampoline uses the same callback trap mechanism as
    bios_intcall(), but deliberately does not execute the suspended parent
@@ -290,6 +304,7 @@ static dos_far_ptr task_guest_is_device(dos_far_ptr name)
 }
 
 
+#if ARM_NATIVE_APPS
 /* Minimal ARM ELF32 loader support.  ET_REL sections are loaded on demand,
    starting from the Murmulator application entry symbols.  Section placement
    and load state are kept in the program's own DOS memory block rather than
@@ -4051,6 +4066,8 @@ fail:
   return (COUNT)rc;
 }
 
+#endif /* ARM_NATIVE_APPS */
+
 ULONG SftGetFsize(int sft_idx)
 {
   dos_far_ptr s = idx_to_sft(sft_idx);
@@ -4667,8 +4684,10 @@ enum exec_process_kind
 {
   EXEC_PROCESS_GUEST,
   EXEC_PROCESS_NATIVE_COMMAND,
+#if ARM_NATIVE_APPS
   EXEC_PROCESS_ARM_ELF,
   EXEC_PROCESS_ARM_EZ
+#endif
 };
 
 struct exec_process_start
@@ -4679,8 +4698,10 @@ struct exec_process_start
   UWORD ax_bx;
   UWORD child_psp;
   enum exec_process_kind kind;
+#if ARM_NATIVE_APPS
   arm_elf_load_meta *arm_elf;
   arm_ez_load_meta *arm_ez;
+#endif
 };
 
 static void exec_set_initial_registers(const struct exec_process_start *start)
@@ -4696,6 +4717,7 @@ static void exec_set_initial_registers(const struct exec_process_start *start)
   cpu_setflags(cpu, 0x0200, (uword)~0x0200u);
 }
 
+#if ARM_NATIVE_APPS
 typedef void *(*arm_elf_init_fn)(void);
 typedef int (*arm_elf_main_fn)(int, char **);
 typedef void (*arm_elf_fini_fn)(void *);
@@ -5067,6 +5089,7 @@ static int arm_ez_run_body(void *opaque)
 
   return entry(meta->argc, (char **)(uintptr_t)meta->argv_addr);
 }
+#endif /* ARM_NATIVE_APPS */
 
 static COUNT exec_run_process(const struct exec_process_start *start)
 {
@@ -5101,10 +5124,13 @@ static COUNT exec_run_process(const struct exec_process_start *start)
                offsetof(struct exec_child_context, cpu) +
                offsetof(struct saved_cpu_ctx, sp),
            parent_sp);
+#if ARM_NATIVE_APPS
   if (start->kind != EXEC_PROCESS_ARM_ELF &&
       start->kind != EXEC_PROCESS_ARM_EZ)
+#endif
     exec_set_initial_registers(start);
 
+#if ARM_NATIVE_APPS
   if (start->kind == EXEC_PROCESS_ARM_ELF ||
       start->kind == EXEC_PROCESS_ARM_EZ)
   {
@@ -5214,7 +5240,9 @@ static COUNT exec_run_process(const struct exec_process_start *start)
       term_exit_type = 0;
     }
   }
-  else if (start->kind == EXEC_PROCESS_NATIVE_COMMAND)
+  else
+#endif /* ARM_NATIVE_APPS */
+  if (start->kind == EXEC_PROCESS_NATIVE_COMMAND)
   {
     UBYTE exit_code = fcom_process_main(cpu, start->child_psp);
 
@@ -5259,12 +5287,15 @@ COUNT exec_run_native_command(UWORD child_psp_seg, UWORD fcbcode)
   start.ax_bx = fcbcode;
   start.child_psp = child_psp_seg;
   start.kind = EXEC_PROCESS_NATIVE_COMMAND;
+#if ARM_NATIVE_APPS
   start.arm_elf = NULL;
   start.arm_ez = NULL;
+#endif
 
   return exec_run_process(&start);
 }
 
+#if ARM_NATIVE_APPS
 static COUNT exec_run_arm_elf(UWORD child_psp_seg,
                               arm_elf_load_meta *meta)
 {
@@ -5297,6 +5328,7 @@ static COUNT exec_run_arm_ez(UWORD child_psp_seg, arm_ez_load_meta *meta)
   start.arm_ez = meta;
   return exec_run_process(&start);
 }
+#endif /* ARM_NATIVE_APPS */
 
 static COUNT exec_run_child(dos_far_ptr entry, dos_far_ptr stack,
                             UWORD dses, UWORD ax_bx, UWORD child_psp_seg)
@@ -5309,8 +5341,10 @@ static COUNT exec_run_child(dos_far_ptr entry, dos_far_ptr stack,
   start.ax_bx = ax_bx;
   start.child_psp = child_psp_seg;
   start.kind = EXEC_PROCESS_GUEST;
+#if ARM_NATIVE_APPS
   start.arm_elf = NULL;
   start.arm_ez = NULL;
+#endif
 
   return exec_run_process(&start);
 }
@@ -5791,6 +5825,21 @@ static COUNT DosExecFar(COUNT mode, exec_blk *ep, dos_far_ptr x86_lp)
   if (rc == sizeof(exe_header) &&
       (EXE_U16(exSignature) == MAGIC || EXE_U16(exSignature) == OLD_MAGIC))
     rc = DosExeLoader(x86_lp, &TempExeBlock, mode, fd);
+#if !ARM_NATIVE_APPS
+  else if ((rc >= 2 &&
+            task_sec_read8(0) == 'E' &&
+            task_sec_read8(1) == 'Z') ||
+           (rc >= 4 &&
+            task_sec_read8(0) == 0x7f &&
+            task_sec_read8(1) == 'E' &&
+            task_sec_read8(2) == 'L' &&
+            task_sec_read8(3) == 'F'))
+  {
+    DosCloseSft(fd, FALSE);
+    dos_printf("Native ARM executables are not supported on this host\r\n");
+    rc = DE_INVLDFMT;
+  }
+#else
   else if (rc >= 2 &&
            task_sec_read8(0) == 'E' &&
            task_sec_read8(1) == 'Z')
@@ -5821,6 +5870,7 @@ static COUNT DosExecFar(COUNT mode, exec_blk *ep, dos_far_ptr x86_lp)
       rc = DosArmElfLoader(&TempExeBlock, mode, fd,
                            (BYTE *)arm_native_guest_ptr(x86_lp));
   }
+#endif /* ARM_NATIVE_APPS */
   else if (rc != 0)
     rc = DosComLoader(x86_lp, &TempExeBlock, mode, fd);
   else

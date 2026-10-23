@@ -72,7 +72,7 @@ extern "C" {
         interactive Abort/Retry/Ignore yet, so a disk error here
         always returns immediately instead of looping on RETRY.
 */
-_Static_assert(sizeof(request) == 30, "request no longer fits in internal_data->IoReqHdr[30], see lol.h");
+static_assert(sizeof(request) == 30, "request no longer fits in internal_data->IoReqHdr[30], see lol.h");
 
 UWORD dskxfer(COUNT dsk, ULONG blkno, dos_far_ptr buf, UWORD numblocks, COUNT mode)
 {
