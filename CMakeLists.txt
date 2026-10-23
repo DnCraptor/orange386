@@ -22,8 +22,9 @@ target_compile_options(orange386 PRIVATE
     -Wno-old-style-declaration
 )
 target_include_directories(orange386 PUBLIC src)
-add_compile_definitions(PRIVATE
+target_compile_definitions(orange386 PRIVATE
     _POSIX_C_SOURCE=200809L
     NO_PAGING=1
+    ORANGE386=1
 )
 install(TARGETS orange386 RUNTIME DESTINATION bin)

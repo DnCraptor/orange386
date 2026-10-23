@@ -13,6 +13,10 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
+/* Initial Linux backing store for the guest physical address space. */
+#define GUEST_RAM_SIZE (16u * 1024u * 1024u)
+uint8_t *guest_ram_base;
+
 struct buffer {
     uint32_t handle, pitch, size, fb;
     void *pixels;
@@ -87,6 +91,13 @@ int main(int argc, char **argv)
     int fd = open(device, O_RDWR | O_CLOEXEC);
     if (fd < 0) { perror(device); return EXIT_FAILURE; }
 
+    guest_ram_base = calloc(1, GUEST_RAM_SIZE);
+    if (!guest_ram_base) {
+        perror("guest RAM allocation");
+        close(fd);
+        return EXIT_FAILURE;
+    }
+
     int result = EXIT_FAILURE;
     drmModeRes *res = drmModeGetResources(fd);
     drmModeConnector *conn = NULL;
@@ -159,6 +170,8 @@ done:
     if (old) drmModeFreeCrtc(old);
     if (conn) drmModeFreeConnector(conn);
     if (res) drmModeFreeResources(res);
+    free(guest_ram_base);
+    guest_ram_base = NULL;
     close(fd);
     return result;
 }

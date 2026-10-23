@@ -40,8 +40,14 @@ extern uint32_t ram_pages_size;
 #define PC_RAM32 ((uint32_t*)guest_ram_base)
 #define EGA128_QSPI_RAM ((uint8_t *)0x11000000u)
 #else
+#ifdef ORANGE386
+extern uint8_t *guest_ram_base;
+#define PC_RAM (guest_ram_base)
+#define PC_RAM32 ((uint32_t *)guest_ram_base)
+#else
 #define PC_RAM ((uint8_t *)0x11000000u)
 #define PC_RAM32 ((uint32_t *)0x11000000u)
+#endif
 #endif
 #define CHECK_RAM_BOARDER_ENABLED 0
 extern unsigned long phys_mem_size;
