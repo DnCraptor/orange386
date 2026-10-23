@@ -15,6 +15,7 @@ add_executable(orange386
     src/i386.c
     src/fpu.c
     src/iomem.c
+    src/bios/dispatch.c
 )
 target_link_libraries(orange386 PRIVATE PkgConfig::LIBDRM m)
 target_compile_options(orange386 PRIVATE

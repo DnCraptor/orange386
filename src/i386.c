@@ -3950,7 +3950,7 @@ static bool verrw_helper(CPUI386 *cpu, int sel, int wr, int *zf)
         if (embedded_id != intnum) THROW0(EX_UD); \
         cpu->next_ip = cpu->ip; \
         PREFETCH_RESET \
-        if (rp2350_bios_handler((CPU*)cpu, intnum)) { \
+        if (native_bios_dispatch((CPU*)cpu, intnum)) { \
             IRET(); \
         } else { \
             return true; \

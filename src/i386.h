@@ -239,7 +239,7 @@ void cpu_install_dos_handlers(CPU*);
    #define PREFETCH_RESET
 #endif
 
-bool rp2350_bios_handler(CPU* cpu, uint8_t intnum);
+bool native_bios_dispatch(CPU* cpu, uint8_t intnum);
 
 /* Native BIOS entry stubs live in ordinary guest-visible ROM.  Each stub is
  *   0F FF <handler-id>
