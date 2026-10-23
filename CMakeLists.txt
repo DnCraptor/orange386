@@ -32,3 +32,25 @@ target_compile_definitions(orange386 PRIVATE
     I386_MODE=1
 )
 install(TARGETS orange386 RUNTIME DESTINATION bin)
+
+# ROM images and configuration are project-owned resources, never fetched at build time.
+set(ORANGE386_RESOURCES
+    "${CMAKE_SOURCE_DIR}/386/bios.bin"
+    "${CMAKE_SOURCE_DIR}/386/vgabios.bin"
+    "${CMAKE_SOURCE_DIR}/386/config.ini"
+    "${CMAKE_SOURCE_DIR}/386/fdd0.img"
+    "${CMAKE_SOURCE_DIR}/386/fdd0dr81.img"
+    "${CMAKE_SOURCE_DIR}/386/fdd0free.img"
+)
+foreach(resource IN LISTS ORANGE386_RESOURCES)
+    if(NOT EXISTS "${resource}")
+        message(FATAL_ERROR "Missing bundled orange386 resource: ${resource}")
+    endif()
+endforeach()
+add_custom_command(TARGET orange386 POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:orange386>/386"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        ${ORANGE386_RESOURCES} "$<TARGET_FILE_DIR:orange386>/386"
+    COMMENT "Copy bundled BIOS ROMs and config.ini into the executable directory"
+    VERBATIM
+)
