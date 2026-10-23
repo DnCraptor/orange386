@@ -12,8 +12,10 @@ add_executable(orange386
     src/main.c
     src/i386.c
     src/fpu.c
+    src/iomem.c
+    src/iomem.c
 )
-target_link_libraries(orange386 PRIVATE PkgConfig::LIBDRM)
+target_link_libraries(orange386 PRIVATE PkgConfig::LIBDRM m)
 target_compile_options(orange386 PRIVATE
     -Wall
     -Wextra
@@ -25,6 +27,7 @@ target_include_directories(orange386 PUBLIC src)
 target_compile_definitions(orange386 PRIVATE
     _POSIX_C_SOURCE=200809L
     NO_PAGING=1
-    ORANGE386=1
+    I386_MODE=1
+    I386_MODE=1
 )
 install(TARGETS orange386 RUNTIME DESTINATION bin)

@@ -5272,14 +5272,8 @@ static void IRAM_ATTR i386_step(CPU* _cpu, int stepcount)
 {
 	CPUI386* cpu = (CPUI386*)_cpu;
 	if ((cpu->flags & IF) && cpu->intr) {
-		#ifndef ORANGE386
-		uint32_t irq_state = save_and_disable_interrupts();
-#endif
 		cpu->intr = false;
 		int no = cpu->cb.pic_read_irq(cpu->cb.pic);
-#ifndef ORANGE386
-		restore_interrupts(irq_state);
-#endif
 		cpu->halt = false;
 		cpu->ip = cpu->next_ip;
 		if (!call_isr(cpu, no, false, 1)) {
@@ -5291,12 +5285,8 @@ static void IRAM_ATTR i386_step(CPU* _cpu, int stepcount)
 	}
 
 	if (cpu->halt) {
-#ifdef ORANGE386
         const struct timespec delay = { .tv_sec = 0, .tv_nsec = 1000 };
         nanosleep(&delay, NULL);
-#else
-		usleep(1);
-#endif
 		return;
 	}
 
