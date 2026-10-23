@@ -12,6 +12,7 @@ pkg_check_modules(LIBDRM REQUIRED IMPORTED_TARGET libdrm)
 
 add_executable(orange386
     src/main.c
+    src/vga_text.c
     src/i386.c
     src/fpu.c
     src/iomem.c

@@ -4,6 +4,7 @@
 #include <inttypes.h>
 #include <signal.h>
 #include "i386.h"
+#include "vga_text.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -31,7 +32,8 @@ static void stop_cpu(int signum)
 static uint8_t io_read8(void *opaque, int port)
 {
     (void)opaque;
-    (void)port;
+    if ((unsigned)(port - 0x3c0) <= 0x1f)
+        return vga_text_io_read((uint16_t)port);
     return 0xff;
 }
 
@@ -50,8 +52,8 @@ static uint32_t io_read32(void *opaque, int port)
 static void io_write8(void *opaque, int port, uint8_t value)
 {
     (void)opaque;
-    (void)port;
-    (void)value;
+    if ((unsigned)(port - 0x3c0) <= 0x1f)
+        vga_text_io_write((uint16_t)port, value);
 }
 
 static void io_write16(void *opaque, int port, uint16_t value)
@@ -114,7 +116,8 @@ static int load_bios_rom(const char *path)
     return 0;
 }
 
-static int run_cpu(const char *bios_path)
+static int run_cpu(const char *bios_path, uint8_t *pixels,
+                   uint32_t pitch, uint32_t width, uint32_t height)
 {
     CPU_CB *cb = NULL;
     CPU *cpu = cpu_new(3, &cb);
@@ -137,8 +140,13 @@ static int run_cpu(const char *bios_path)
     void (*previous)(int) = signal(SIGINT, stop_cpu);
     puts("i386 CPU running; Ctrl+C stops emulation and restores DRM.");
     fflush(stdout);
-    while (cpu_running)
+    unsigned frames = 0;
+    while (cpu_running) {
         cpu_step(cpu, 2048);
+        /* Bootstrap scanout; subsequent work will add a proper VGA frame clock. */
+        if ((++frames & 63u) == 0)
+            vga_text_render(pixels, pitch, width, height, guest_ram_base);
+    }
     signal(SIGINT, previous);
     return 0;
 }
