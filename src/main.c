@@ -116,6 +116,46 @@ static int load_bios_rom(const char *path)
     return 0;
 }
 
+/* Legacy VGA option ROM at C000:0000, separate from the system BIOS. */
+static int load_vga_rom(void)
+{
+    const char *path = "386/vgabios.bin";
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        perror(path);
+        return -1;
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return -1;
+    }
+    long length = ftell(file);
+    if (length < 512 || length > 0x10000 || (length & 511) != 0 ||
+        fseek(file, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "Invalid VGA option ROM size: %s\\n", path);
+        fclose(file);
+        return -1;
+    }
+    /* Never overwrite a system BIOS mapped into the same address range. */
+    if (guest_ram_base[0xc0000] != 0xff ||
+        guest_ram_base[0xc0000 + (size_t)length - 1] != 0xff) {
+        fprintf(stderr, "VGA ROM overlaps system BIOS\\n");
+        fclose(file);
+        return -1;
+    }
+    if (fread(guest_ram_base + 0xc0000, 1, (size_t)length, file) != (size_t)length) {
+        fprintf(stderr, "Short VGA ROM read: %s\\n", path);
+        fclose(file);
+        return -1;
+    }
+    fclose(file);
+    if (guest_ram_base[0xc0000] != 0x55 || guest_ram_base[0xc0001] != 0xaa) {
+        fprintf(stderr, "Invalid VGA option ROM signature: %s\\n", path);
+        return -1;
+    }
+    return 0;
+}
+
 static int run_cpu(const char *bios_path, uint8_t *pixels,
                    uint32_t pitch, uint32_t width, uint32_t height)
 {
@@ -323,6 +363,13 @@ int main(int argc, char **argv)
     }
 
     if (load_bios_rom(bios_path) != 0) {
+        free(guest_ram_base);
+        guest_ram_base = NULL;
+        close(fd);
+        return EXIT_FAILURE;
+    }
+
+    if (load_vga_rom() != 0) {
         free(guest_ram_base);
         guest_ram_base = NULL;
         close(fd);
