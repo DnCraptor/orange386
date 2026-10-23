@@ -415,6 +415,15 @@ pstore_block(uint32_t dst, uint32_t src, int len)
     }
 #endif
 
+    if (len <= 0)
+        return len == 0;
+    if ((src < 0xc0000u && (uint64_t)src + (unsigned)len > 0xa0000u) ||
+        (dst < 0xc0000u && (uint64_t)dst + (unsigned)len > 0xa0000u)) {
+        for (int i = 0; i < len; ++i)
+            pstore8(dst + (uint32_t)i, pload8(src + (uint32_t)i));
+        return true;
+    }
+
     if (likely(!VGA_WINDOW(dst) && !VGA_WINDOW(dst + len - 1))) {
 #if CHECK_RAM_BOARDER_ENABLED
         if (unlikely((uint32_t)(dst + len) > phys_mem_size)) return false;
