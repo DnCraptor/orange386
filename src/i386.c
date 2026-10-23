@@ -2878,7 +2878,7 @@ static bool call_isr(CPUI386 *cpu, int no, bool pusherr, int ext);
 			break; \
 		} \
 		uword count = cx; \
-		int countd; \
+		uword countd; \
 		if (dir > 0) countd = (4096 - (memld.addr1 & 4095)) / (BIT / 8); \
 		else countd = 1 + (memld.addr1 & 4095) / (BIT / 8); \
 		if (countd < count) \
@@ -3059,7 +3059,7 @@ static bool call_isr(CPUI386 *cpu, int no, bool pusherr, int ext);
 			break; \
 		} \
 		uword count = cx; \
-		int countd; \
+		uword countd; \
 		if (dir > 0) countd = (4096 - (memld.addr1 & 4095)) / (BIT / 8); \
 		else countd = 1 + (memld.addr1 & 4095) / (BIT / 8); \
 		if (countd < count) \
@@ -3122,7 +3122,7 @@ static bool call_isr(CPUI386 *cpu, int no, bool pusherr, int ext);
 			break; \
 		} \
 		uword count = cx; \
-		int counts; \
+		uword counts; \
 		if (dir > 0) \
 			counts = (4096 - (memls.addr1 & 4095)) / (BIT / 8); \
 		else \
@@ -4817,7 +4817,7 @@ u16 prev_ip = cpu->next_ip;
 	OptAddr meml;
 	uword base = cpu->idt.base;
 	int off = no << 3;
-	if (off + 7 > cpu->idt.limit) {
+	if ((uword)(off + 7) > cpu->idt.limit) {
 		dolog("call_isr error0 %d %d\n", off, cpu->idt.limit);
 		THROW(EX_GP, off | 2 | ext);
 	}
@@ -5474,19 +5474,19 @@ CPU* cpu_new(int gen, CPU_CB **cb)
 	CPU* cpu;
 	switch (gen) {
 #ifndef I386_MODE
-	case 0: cpu = (CPU*)calloc(sizeof(CPU), 1); cpu->flags_mask = EFLAGS_MASK_86; break;
-	case 1: cpu = (CPU*)calloc(sizeof(CPU), 1); cpu->flags_mask = EFLAGS_MASK_186; break;
+	case 0: cpu = (CPU*)calloc(1, sizeof(CPU)); cpu->flags_mask = EFLAGS_MASK_86; break;
+	case 1: cpu = (CPU*)calloc(1, sizeof(CPU)); cpu->flags_mask = EFLAGS_MASK_186; break;
 	default:
-	        cpu = (CPU*)calloc(sizeof(CPU), 1); gen = 2; cpu->flags_mask = EFLAGS_MASK_286; break;
+	        cpu = (CPU*)calloc(1, sizeof(CPU)); gen = 2; cpu->flags_mask = EFLAGS_MASK_286; break;
 #else
-	case 3: cpu = (CPU*)calloc(sizeof(CPUI386), 1); cpu->flags_mask = EFLAGS_MASK_386; break;
-	case 4: cpu = (CPU*)calloc(sizeof(CPUI386), 1); cpu->flags_mask = EFLAGS_MASK_486; break;
+	case 3: cpu = (CPU*)calloc(1, sizeof(CPUI386)); cpu->flags_mask = EFLAGS_MASK_386; break;
+	case 4: cpu = (CPU*)calloc(1, sizeof(CPUI386)); cpu->flags_mask = EFLAGS_MASK_486; break;
 	default:
-	        cpu = (CPU*)calloc(sizeof(CPUI386), 1); gen = 5; cpu->flags_mask = EFLAGS_MASK_586; break;
+	        cpu = (CPU*)calloc(1, sizeof(CPUI386)); gen = 5; cpu->flags_mask = EFLAGS_MASK_586; break;
 #endif
 	}
 	cpu->gen = gen;
-	CPU_ext_accessors_t* cpue = calloc(sizeof(CPU_ext_accessors_t), 1);
+	CPU_ext_accessors_t* cpue = calloc(1, sizeof(CPU_ext_accessors_t));
 	cpu->ext_accessors = cpue;
 
 #ifdef I386_MODE

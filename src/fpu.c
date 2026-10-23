@@ -357,7 +357,7 @@ static bool fpstorei16(void *cpu, int seg, uword addr, double val)
 
 static bool fpstorei32(void *cpu, int seg, uword addr, double val)
 {
-	s32 v = val < 2147483648.0 && val >= -2147483648.0 ? (s32) val : 0x80000000;
+	s32 v = val < 2147483648.0 && val >= -2147483648.0 ? (s32) val : INT32_MIN;
 	if (!cpu_store32(cpu, seg, addr, v))
 		return false;
 	return true;
@@ -366,7 +366,7 @@ static bool fpstorei32(void *cpu, int seg, uword addr, double val)
 static bool fpstorei64(void *cpu, int seg, uword addr, double val)
 {
 	int64_t v = val < 9223372036854775808.0 && val >= -9223372036854775808.0 ?
-		(int64_t) val : 0x8000000000000000ll;
+		(int64_t) val : INT64_MIN;
 	if (!cpu_store32(cpu, seg, addr, v))
 		return false;
 	if (!cpu_store32(cpu, seg, addr + 4, v >> 32))
@@ -377,21 +377,22 @@ static bool fpstorei64(void *cpu, int seg, uword addr, double val)
 static bool fpstorebcd(void *cpu, int seg, uword addr, double val)
 {
 	int64_t v = val < 9223372036854775808.0 && val >= -9223372036854775808.0 ?
-		(int64_t) val : 0x8000000000000000ll;
+		(int64_t) val : INT64_MIN;
+	uint64_t magnitude = v < 0 ? 0u - (uint64_t)v : (uint64_t)v;
 	int sign = 0;
 	if (v < 0) {
 		sign = 1;
-		v = -v;
+		/* magnitude already contains the absolute value. */
 	}
 
 	for (int i = 0; i < 9; i++) {
-		int res = (v % 10) | ((v / 10) % 10) << 4;
-		v /= 100;
+		int res = (magnitude % 10) | ((magnitude / 10) % 10) << 4;
+		magnitude /= 100;
 		if (!cpu_store8(cpu, seg, addr + i, res))
 			return false;
 	}
 
-	int res = (v % 10) | ((v / 10) % 10) << 4;
+	int res = (magnitude % 10) | ((magnitude / 10) % 10) << 4;
 	if (sign)
 		res |= 0x80;
 	if (!cpu_store8(cpu, seg, addr + 9, res))
