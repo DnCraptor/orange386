@@ -13,4 +13,9 @@ static inline uint64_t time_us_64(void)
            (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
+static inline uint32_t time_us_32(void)
+{
+    return (uint32_t)time_us_64();
+}
+
 #endif

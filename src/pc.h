@@ -9,12 +9,15 @@
 #include "i386.h"
 #include "i8259.h"
 #include "i8254.h"
+#include "disk.h"
 #include "vga.h"
 #include "i8042.h"
 #include "misc.h"
+#include "i8257.h"
 #include "pcspk.h"
 #include "pci.h"
 #include "ini.h"
+#include "fdd.h"
 
 /*
  * Linux/ARM64 machine model shared with murm386 (src/pc.h).
@@ -29,6 +32,8 @@
 uint32_t get_uticks();
 void *pcmalloc(long size);
 int load_rom(void *phys_mem, const char *file, uword addr, int backward);
+
+typedef struct IDEIFState IDEIFState;
 
 typedef struct PC {
 	CPU *cpu;
@@ -48,10 +53,25 @@ typedef struct PC {
 	KBDState *i8042;
 	PS2KbdState *kbd;
 	PS2MouseState *mouse;
+	I8257State *isa_dma, *isa_hdma;
+	FDCState   *fdc;
+
+	/* Emulink FDD – simple virtual floppy protocol on ports 0xF1F0/0xF1F4 */
+	struct {
+		uint32_t status;   /* read via 0xF1F0 */
+		uint32_t cmd;      /* written via 0xF1F0 */
+		uint32_t args[4];
+		int      argi;
+		int      dataleft;
+	} emulink;
 	PCSpkState *pcspk;
 
 	int pcspk_enabled;
 	int mouse_enabled;
+
+	IDEIFState *ide;
+	IDEIFState *ide2;
+	PCIDevice *pci_ide;
 
 	I440FXState *i440fx;
 	PCIBus *pcibus;

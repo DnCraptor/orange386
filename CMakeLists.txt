@@ -13,6 +13,7 @@ pkg_check_modules(LIBDRM REQUIRED IMPORTED_TARGET libdrm)
 add_executable(orange386
     src/main.c
     src/platform_linux.c
+    src/ff_posix.c
     src/video_drm.c
     src/vga_hw_linux.c
     src/pc.c
@@ -23,10 +24,14 @@ add_executable(orange386
 
     # Devices
     src/vga.c        # VGA emulation
+    src/disk.c       # INT 13h disk handler (from pico-286)
+    src/ide.c
+    src/fdd.c
 
     # Peripheral chips
     src/i8042.c      # Keyboard controller
     src/i8254.c      # Timer
+    src/i8257.c      # DMA
     src/i8259.c      # PIC
     src/pci.c        # PCI bus
     src/misc.c       # Serial, RTC, CMOS
