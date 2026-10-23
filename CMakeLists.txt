@@ -12,11 +12,24 @@ pkg_check_modules(LIBDRM REQUIRED IMPORTED_TARGET libdrm)
 
 add_executable(orange386
     src/main.c
+    src/platform_linux.c
+    src/pc.c
     src/vga_text.c
     src/i386.c
     src/fpu.c
     src/iomem.c
     src/bios/dispatch.c
+
+    # Peripheral chips
+    src/i8042.c      # Keyboard controller
+    src/i8254.c      # Timer
+    src/i8259.c      # PIC
+    src/pci.c        # PCI bus
+    src/misc.c       # Serial, RTC, CMOS
+    src/pcspk.c      # PC Speaker (port 61h)
+
+    # Configuration
+    src/ini.c
 )
 target_link_libraries(orange386 PRIVATE PkgConfig::LIBDRM m)
 target_compile_options(orange386 PRIVATE
@@ -29,8 +42,14 @@ target_compile_options(orange386 PRIVATE
 target_include_directories(orange386 PUBLIC src)
 target_compile_definitions(orange386 PRIVATE
     _POSIX_C_SOURCE=200809L
+    _DEFAULT_SOURCE=1
     NO_PAGING=1
     I386_MODE=1
+    EMU_CPU_GEN=3
+    # Data directory (BIOS images, config.ini, disk images), relative to
+    # the working directory; same names as murm386's SD-card layout.
+    SD_DATA_DIR="386"
+    SD_DATA_DIR_SLASH="386/"
 )
 install(TARGETS orange386 RUNTIME DESTINATION bin)
 

@@ -15,8 +15,7 @@
 #include <stdbool.h>
 #include <string.h>
 
-#define __not_in_flash_func(X) X
-#define __not_in_flash(X)
+#include "pico.h"
 
 #if EMULATE_LTEMS
 

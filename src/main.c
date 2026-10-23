@@ -1,9 +1,9 @@
-#define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <signal.h>
-#include "i386.h"
+#include "pc.h"
+#include "platform_linux.h"
 #include "vga_text.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -16,11 +16,6 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
-/* Initial Linux backing store for the guest physical address space. */
-#define GUEST_RAM_SIZE (16u * 1024u * 1024u)
-uint8_t *guest_ram_base;
-
-/* Linux host port: initial CPU I/O bus, pending device implementations. */
 static volatile sig_atomic_t cpu_running = 1;
 
 static void stop_cpu(int signum)
@@ -29,163 +24,46 @@ static void stop_cpu(int signum)
     cpu_running = 0;
 }
 
-static uint8_t io_read8(void *opaque, int port)
+static PCConfig config;
+
+static void load_default_config(void)
+{
+    memset(&config, 0, sizeof(config));
+    config.mem_size = 16l << 20;
+    config.vga_mem_size = 256 * 1024;
+    config.cpu_gen = 3;
+    config.fpu = 1;
+    config.width = 720;
+    config.height = 400;
+    /* NULL main BIOS means the native BIOS, which is not ported yet. */
+    config.bios = NULL;
+    config.vga_bios = "vgabios.bin";
+}
+
+static void platform_poll(void *opaque)
 {
     (void)opaque;
-    if ((unsigned)(port - 0x3c0) <= 0x1f)
-        return vga_text_io_read((uint16_t)port);
-    return 0xff;
 }
 
-static uint16_t io_read16(void *opaque, int port)
+static int run_pc(PC *pc, uint8_t *pixels,
+                  uint32_t pitch, uint32_t width, uint32_t height)
 {
-    uint16_t lo = io_read8(opaque, port);
-    return lo | ((uint16_t)io_read8(opaque, port + 1) << 8);
-}
-
-static uint32_t io_read32(void *opaque, int port)
-{
-    uint32_t lo = io_read16(opaque, port);
-    return lo | ((uint32_t)io_read16(opaque, port + 2) << 16);
-}
-
-static void io_write8(void *opaque, int port, uint8_t value)
-{
-    (void)opaque;
-    if ((unsigned)(port - 0x3c0) <= 0x1f)
-        vga_text_io_write((uint16_t)port, value);
-}
-
-static void io_write16(void *opaque, int port, uint16_t value)
-{
-    io_write8(opaque, port, (uint8_t)value);
-    io_write8(opaque, port + 1, (uint8_t)(value >> 8));
-}
-
-static void io_write32(void *opaque, int port, uint32_t value)
-{
-    io_write16(opaque, port, (uint16_t)value);
-    io_write16(opaque, port + 2, (uint16_t)(value >> 16));
-}
-
-static int io_read_string(void *opaque, int port, uint32_t addr, int dir, int count)
-{
-    (void)opaque; (void)port; (void)addr; (void)dir; (void)count;
-    return 0; /* CPU handles each transfer using io_read8/16/32. */
-}
-
-static int io_write_string(void *opaque, int port, uint32_t addr, int size, int count)
-{
-    (void)opaque; (void)port; (void)addr; (void)size; (void)count;
-    return 0;
-}
-
-static int pic_read_irq(void *opaque)
-{
-    (void)opaque;
-    return 0xff; /* Called only after a device raises an IRQ. */
-}
-
-static int load_bios_rom(const char *path)
-{
-    FILE *file = fopen(path, "rb");
-    if (!file) {
-        perror(path);
-        return -1;
-    }
-    if (fseek(file, 0, SEEK_END) != 0) {
-        perror("BIOS seek");
-        fclose(file);
-        return -1;
-    }
-    long length = ftell(file);
-    if (length < 16 || length > 0x40000 || fseek(file, 0, SEEK_SET) != 0) {
-        fprintf(stderr, "BIOS image must be 16..262144 bytes: %s\\n", path);
-        fclose(file);
-        return -1;
-    }
-    /* ROMs smaller than 64 KiB are mapped at the top of the first MiB. */
-    memset(guest_ram_base + 0xc0000, 0xff, 0x40000);
-    size_t offset = 0x100000u - (size_t)length;
-    size_t n = fread(guest_ram_base + offset, 1, (size_t)length, file);
-    fclose(file);
-    if (n != (size_t)length) {
-        fprintf(stderr, "Short BIOS read: %s\\n", path);
-        return -1;
-    }
-    return 0;
-}
-
-/* Legacy VGA option ROM at C000:0000, separate from the system BIOS. */
-static int load_vga_rom(void)
-{
-    const char *path = "386/vgabios.bin";
-    FILE *file = fopen(path, "rb");
-    if (!file) {
-        perror(path);
-        return -1;
-    }
-    if (fseek(file, 0, SEEK_END) != 0) {
-        fclose(file);
-        return -1;
-    }
-    long length = ftell(file);
-    if (length < 512 || length > 0x10000 || (length & 511) != 0 ||
-        fseek(file, 0, SEEK_SET) != 0) {
-        fprintf(stderr, "Invalid VGA option ROM size: %s\\n", path);
-        fclose(file);
-        return -1;
-    }
-    /* Never overwrite a system BIOS mapped into the same address range. */
-    if (guest_ram_base[0xc0000] != 0xff ||
-        guest_ram_base[0xc0000 + (size_t)length - 1] != 0xff) {
-        fprintf(stderr, "VGA ROM overlaps system BIOS\\n");
-        fclose(file);
-        return -1;
-    }
-    if (fread(guest_ram_base + 0xc0000, 1, (size_t)length, file) != (size_t)length) {
-        fprintf(stderr, "Short VGA ROM read: %s\\n", path);
-        fclose(file);
-        return -1;
-    }
-    fclose(file);
-    if (guest_ram_base[0xc0000] != 0x55 || guest_ram_base[0xc0001] != 0xaa) {
-        fprintf(stderr, "Invalid VGA option ROM signature: %s\\n", path);
-        return -1;
-    }
-    return 0;
-}
-
-static int run_cpu(const char *bios_path, uint8_t *pixels,
-                   uint32_t pitch, uint32_t width, uint32_t height)
-{
-    CPU_CB *cb = NULL;
-    CPU *cpu = cpu_new(3, &cb);
-    if (!cpu || !cb) {
-        fprintf(stderr, "Cannot initialize i386 CPU\\n");
-        return -1;
-    }
-    cb->io_read8 = io_read8;
-    cb->io_read16 = io_read16;
-    cb->io_read32 = io_read32;
-    cb->io_write8 = io_write8;
-    cb->io_write16 = io_write16;
-    cb->io_write32 = io_write32;
-    cb->io_read_string = io_read_string;
-    cb->io_write_string = io_write_string;
-    cb->pic_read_irq = pic_read_irq;
-    cpu->bios = bios_path; /* Execute ROM instructions, not native BIOS stubs. */
-    cpu_reset(cpu);
-
     void (*previous)(int) = signal(SIGINT, stop_cpu);
-    puts("i386 CPU running; Ctrl+C stops emulation and restores DRM.");
+    puts("PC running; Ctrl+C stops emulation and restores DRM.");
     fflush(stdout);
-    unsigned frames = 0;
-    while (cpu_running) {
-        cpu_step(cpu, 2048);
-        /* Bootstrap scanout; subsequent work will add a proper VGA frame clock. */
-        if ((++frames & 63u) == 0)
+    uint32_t last_frame = get_uticks();
+    while (cpu_running && !pc->shutdown_state) {
+        pc_step(pc, 4096);
+        if (pc->reset_request) {
+            pc->reset_request = 0;
+            load_bios_and_reset(pc);
+        }
+        /* Bootstrap scanout at ~60 Hz until vga.c is ported. */
+        uint32_t now = get_uticks();
+        if ((uint32_t)(now - last_frame) >= 16667u) {
+            last_frame = now;
             vga_text_render(pixels, pitch, width, height, guest_ram_base);
+        }
     }
     signal(SIGINT, previous);
     return 0;
@@ -322,59 +200,31 @@ static bool select_video_mode(const drmModeConnector *conn,
 int main(int argc, char **argv)
 {
     const char *device = argc > 1 ? argv[1] : "/dev/dri/card0";
-    const char *bios_path = NULL;
-    char bios_file[512];
-    FILE *conf = fopen("386/config.ini", "r");
-    if (conf) {
-        char line[512];
-        int pc_section = 0;
-        while (fgets(line, sizeof(line), conf)) {
-            char *s = line;
-            while (*s == ' ' || *s == '\t') ++s;
-            if (*s == '[') {
-                pc_section = !strncmp(s, "[pc]", 4) || !strncmp(s, "[386]", 5);
-                continue;
-            }
-            if (!pc_section || strncmp(s, "bios=", 5)) continue;
-            s += 5;
-            s[strcspn(s, "\r\n")] = 0;
-            if (*s && strcmp(s, "native")) {
-                if (strchr(s, '/') || strchr(s, '\\'))
-                    snprintf(bios_file, sizeof(bios_file), "%s", s);
-                else
-                    snprintf(bios_file, sizeof(bios_file), "386/%s", s);
-                bios_path = bios_file;
-            }
-        }
-        fclose(conf);
-    }
-    if (!bios_path) {
-        fprintf(stderr, "Native BIOS is not yet ported; set bios=bios.bin in 386/config.ini\n");
+    load_default_config();
+    if (ini_parse(SD_DATA_DIR_SLASH "config.ini", parse_conf_ini, &config) < 0)
+        fprintf(stderr, "Cannot read " SD_DATA_DIR_SLASH "config.ini, using defaults\n");
+    if (!config.bios) {
+        fprintf(stderr, "Native BIOS is not yet ported; set bios=bios.bin in "
+                SD_DATA_DIR_SLASH "config.ini\n");
         return EXIT_FAILURE;
     }
     int fd = open(device, O_RDWR | O_CLOEXEC);
     if (fd < 0) { perror(device); return EXIT_FAILURE; }
 
-    guest_ram_base = calloc(1, GUEST_RAM_SIZE);
-    if (!guest_ram_base) {
+    if (!platform_alloc_guest_ram((size_t)config.mem_size)) {
         perror("guest RAM allocation");
         close(fd);
         return EXIT_FAILURE;
     }
 
-    if (load_bios_rom(bios_path) != 0) {
-        free(guest_ram_base);
-        guest_ram_base = NULL;
+    PC *pc = pc_new(NULL, platform_poll, NULL, NULL, &config);
+    if (!pc || !pc->cpu) {
+        fprintf(stderr, "Cannot initialize PC\n");
+        platform_free_guest_ram();
         close(fd);
         return EXIT_FAILURE;
     }
-
-    if (load_vga_rom() != 0) {
-        free(guest_ram_base);
-        guest_ram_base = NULL;
-        close(fd);
-        return EXIT_FAILURE;
-    }
+    load_bios_and_reset(pc);
 
     int result = EXIT_FAILURE;
     drmModeRes *res = drmModeGetResources(fd);
@@ -437,9 +287,9 @@ int main(int argc, char **argv)
     printf("DRM: %s, HDMI connector %u, %ux%u @ %u Hz\n", device,
            conn->connector_id, mode.hdisplay, mode.vdisplay, mode.vrefresh);
     puts("VGA text scanout enabled (bootstrap: B8000, 80x25 only).");
-    result = run_cpu(bios_path, b.pixels, b.pitch,
-                     mode.hdisplay, mode.vdisplay) == 0
-                     ? EXIT_SUCCESS : EXIT_FAILURE;
+    result = run_pc(pc, b.pixels, b.pitch,
+                    mode.hdisplay, mode.vdisplay) == 0
+                    ? EXIT_SUCCESS : EXIT_FAILURE;
 
 done:
     if (changed) {
@@ -456,8 +306,7 @@ done:
     if (old) drmModeFreeCrtc(old);
     if (conn) drmModeFreeConnector(conn);
     if (res) drmModeFreeResources(res);
-    free(guest_ram_base);
-    guest_ram_base = NULL;
+    platform_free_guest_ram();
     close(fd);
     return result;
 }

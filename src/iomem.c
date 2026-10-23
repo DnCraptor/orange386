@@ -2,9 +2,8 @@
 #include <stdint.h>
 #include <string.h>
 
-/* Temporary memory-backed I/O aperture, not a VGA/device implementation. */
-void *g_pc = NULL;
-unsigned long phys_mem_size = 16u * 1024u * 1024u;
+/* Temporary memory-backed I/O aperture, not a VGA/device implementation.
+ * g_pc and phys_mem_size are owned by pc.c. */
 
 static int valid(uint32_t addr, uint32_t len)
 {
