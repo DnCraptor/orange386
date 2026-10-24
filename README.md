@@ -21,10 +21,12 @@ Run from a text VT with no compositor controlling the selected DRM device. The w
 
 ```sh
 cd build
-sudo AUDIODEV=plughw:CARD=HDMI,DEV=0 ./orange386 /dev/dri/card0
+sudo ./orange386 /dev/dri/card0
 ```
 
-If the KMS card has another number, pass its actual `/dev/dri/cardN` path. Without `AUDIODEV` the ALSA `default` device is used.
+If the KMS card has another number, pass its actual `/dev/dri/cardN` path.
+
+Sound goes to the first of: `AUDIODEV` in the environment, `audio_device=` in `[murm-286]` of `386/config.ini`, the ALSA card `HDMI` (`plughw:CARD=HDMI,DEV=0`), ALSA `default`. Note that `sudo` does not pass a previously exported `AUDIODEV` on; put it on the command line (`sudo AUDIODEV=... ./orange386`) or use `audio_device=`. The startup line `audio: <device>, 44100 Hz stereo` shows the device in use.
 
 Keyboards and mice are grabbed exclusively while the emulator runs.
 

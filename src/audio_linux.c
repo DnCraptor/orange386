@@ -191,12 +191,31 @@ static void *audio_main(void *arg) {
     return NULL;
 }
 
+/*
+ * Sound output device, first match:
+ *   AUDIODEV in the environment (as SDL programs use it),
+ *   audio_device= in config.ini,
+ *   the HDMI card, which carries the picture as well,
+ *   ALSA "default".
+ * Root usually starts the emulator through sudo, which does not pass the
+ * caller's environment on; config.ini and the HDMI default do not depend on it.
+ */
+static const char *audio_device_name(void) {
+    const char *dev = getenv("AUDIODEV");
+    if (dev && *dev)
+        return dev;
+    dev = config_get_audio_device();
+    if (dev && *dev)
+        return dev;
+    if (snd_card_get_index("HDMI") >= 0)
+        return "plughw:CARD=HDMI,DEV=0";
+    return "default";
+}
+
 void audio_init(void) {
     if (audio_started)
         return;
-    const char *dev = getenv("AUDIODEV");
-    if (!dev || !*dev)
-        dev = "default";
+    const char *dev = audio_device_name();
     int err = snd_pcm_open(&pcm, dev, SND_PCM_STREAM_PLAYBACK, 0);
     if (err < 0) {
         fprintf(stderr, "audio: cannot open %s: %s (sound disabled)\n",

@@ -47,6 +47,10 @@ void config_set_raw_disk(const char *path);
 int config_get_ftp_port(void);
 const char *config_get_ftp_user(void);
 const char *config_get_ftp_password(void);
+
+/* ALSA PCM for sound output: [murm-286] audio_device (e.g.
+ * plughw:CARD=HDMI,DEV=0); NULL when not set (see audio_linux.c). */
+const char *config_get_audio_device(void);
 #endif
 
 #define USB_MODE_HOST   0

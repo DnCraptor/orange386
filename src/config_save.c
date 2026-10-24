@@ -37,6 +37,7 @@ static char *cfg_raw_disk = NULL;      /* host device/image behind raw_sd_hdd */
 static int cfg_ftp_port = 2121;
 static char *cfg_ftp_user = NULL;      /* NULL: default "dos" */
 static char *cfg_ftp_password = NULL;  /* NULL: default "dos" */
+static char *cfg_audio_device = NULL;  /* ALSA PCM name; NULL: automatic */
 #endif
 static bool cfg_changed = false;
 
@@ -191,6 +192,7 @@ static void config_set_dynamic_string(char **slot, const char *value, bool hardw
 int config_get_ftp_port(void) { return cfg_ftp_port; }
 const char *config_get_ftp_user(void) { return cfg_ftp_user ? cfg_ftp_user : "dos"; }
 const char *config_get_ftp_password(void) { return cfg_ftp_password ? cfg_ftp_password : "dos"; }
+const char *config_get_audio_device(void) { return cfg_audio_device; }
 
 const char *config_get_raw_disk(void) { return cfg_raw_disk; }
 void config_set_raw_disk(const char *path)
@@ -654,6 +656,8 @@ bool config_save_all(void) {
         write_key_value(&fp, "ftp_user=", cfg_ftp_user);
     if (cfg_ftp_password)
         write_key_value(&fp, "ftp_password=", cfg_ftp_password);
+    if (cfg_audio_device)
+        write_key_value(&fp, "audio_device=", cfg_audio_device);
 #endif
     snprintf(line, sizeof(line), "pcspeaker=%d\r\n", cfg_pcspeaker);
     write_line(&fp, line);
@@ -734,6 +738,14 @@ int parse_frank_386_ini(void* user, const char* section,
     if (strcmp(section, "murm-286") != 0 && strcmp(section, "murm386") != 0) return 1;
 
 #if defined(ORANGE386)
+    if (strcmp(name, "audio_device") == 0) {
+        char *replacement = value[0] ? strdup(value) : NULL;
+        if (!value[0] || replacement) {
+            free(cfg_audio_device);
+            cfg_audio_device = replacement;
+        }
+        return 1;
+    }
     if (strcmp(name, "ftp_port") == 0) {
         int port = atoi(value);
         if (port > 0 && port < 65536)
