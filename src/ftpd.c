@@ -32,6 +32,8 @@
 #define FTPD_LINE_MAX    1024
 #define FTPD_PATH_MAX    600
 #define FTPD_BUF_SIZE    (64u * 1024u)
+/* Longest entry name a listing line carries: FatFs FILINFO.fname (UTF-8). */
+#define FTPD_NAME_MAX    ((int)sizeof(((FILINFO *)0)->fname) - 1)
 
 typedef struct {
     char name[16];
@@ -386,8 +388,8 @@ static void format_list_line(char *out, size_t size, const char *name,
         snprintf(when, sizeof(when), "%s %2d  %4d", month_names[mon - 1], day, year);
     const char *mode = is_dir ? (readonly ? "dr-xr-xr-x" : "drwxr-xr-x")
                               : (readonly ? "-r--r--r--" : "-rw-r--r--");
-    snprintf(out, size, "%s 1 dos dos %12llu %s %s\r\n",
-             mode, (unsigned long long)fsize, when, name);
+    snprintf(out, size, "%s 1 dos dos %12llu %s %.*s\r\n",
+             mode, (unsigned long long)fsize, when, FTPD_NAME_MAX, name);
 }
 
 /* LIST (long) or NLST (names) of a virtual path. */
@@ -435,7 +437,7 @@ static void cmd_list(session_t *s, const char *arg, bool names_only)
         return;
     }
 
-    char line[FF_LFN_BUF * 3 + 96];
+    char line[FTPD_NAME_MAX + 96];
     bool ok = true;
     if (vp.kind == VP_ROOT) {
         for (int i = 0; i < volume_count && ok; ++i) {
@@ -451,7 +453,7 @@ static void cmd_list(session_t *s, const char *arg, bool names_only)
         }
     } else if (single) {
         if (names_only)
-            snprintf(line, sizeof(line), "%s\r\n", fno.fname);
+            snprintf(line, sizeof(line), "%.*s\r\n", FTPD_NAME_MAX, fno.fname);
         else
             format_list_line(line, sizeof(line), fno.fname, false,
                              volumes[vp.vol].readonly || (fno.fattrib & AM_RDO),
@@ -463,7 +465,7 @@ static void cmd_list(session_t *s, const char *arg, bool names_only)
             if (fr != FR_OK || !fno.fname[0])
                 break;
             if (names_only)
-                snprintf(line, sizeof(line), "%s\r\n", fno.fname);
+                snprintf(line, sizeof(line), "%.*s\r\n", FTPD_NAME_MAX, fno.fname);
             else
                 format_list_line(line, sizeof(line), fno.fname,
                                  (fno.fattrib & AM_DIR) != 0,
