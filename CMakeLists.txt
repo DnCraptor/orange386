@@ -28,6 +28,11 @@ add_executable(orange386
     src/font8x16.c
     src/diskui.c     # Disk Manager (Win+F12)
     src/settingsui.c # Settings (Win+F11)
+    src/ftpui.c      # FTP server page (Win+F10)
+    src/ftpd.c       # FTP server for the disk images
+    src/imgfs/imgfs_ff.c       # ChaN FatFs R0.16 (unmodified), imgfs_ names
+    src/imgfs/imgfs_unicode.c
+    src/imgfs/imgfs_diskio.c
     src/pc.c
     src/video_profile.c
     src/i386.c

@@ -39,6 +39,8 @@ DRESULT disk_ioctl (BYTE pdrv, BYTE cmd, void* buff);
    the path cannot be opened, e.g. a block device mounted on the host. */
 bool disk_raw_attach (const char* path);
 void disk_raw_detach (void);
+/* Host descriptor of physical drive 0, or -1 (FTP server, ftpui.c). */
+int disk_raw_fd (void);
 #endif
 
 

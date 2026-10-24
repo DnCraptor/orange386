@@ -13,6 +13,7 @@
 #include "config_save.h"
 #include "diskui.h"
 #include "settingsui.h"
+#include "ftpui.h"
 #include "ff.h"
 #include "diskio.h"
 #include "gameport.h"
@@ -162,7 +163,7 @@ static void cpu_feature_warning_tick(void)
      * Do not hide an OSD subsequently taken over by a normal UI.
      * Otherwise this warning expires independently of emulation.
      */
-    if (!diskui_is_open() && !settingsui_is_open())
+    if (!diskui_is_open() && !settingsui_is_open() && !ftpui_is_open())
         osd_hide();
 }
 
@@ -299,7 +300,7 @@ static bool process_keycode(int is_down, int keycode) {
     if (cpu_feature_warning_until_us && is_down) {
         cpu_feature_warning_until_us = 0;
         cpu_feature_warning_recover_pic();
-        if (!diskui_is_open() && !settingsui_is_open())
+        if (!diskui_is_open() && !settingsui_is_open() && !ftpui_is_open())
             osd_hide();
         return false;
     }
@@ -307,6 +308,33 @@ static bool process_keycode(int is_down, int keycode) {
     // Track Win key state
     if (keycode == KEY_LEFTMETA) {
         win_key_pressed = is_down;
+    }
+
+    // Win+F10: FTP access to the disk images (murm386: USB DEVICE mode).
+    // Leaving that page restarts the PC, so it is not a page switch.
+    if (is_down && keycode == KEY_F10 && win_key_pressed) {
+        if (!ftpui_is_open()) {
+            if (diskui_is_open())
+                diskui_close();
+            if (settingsui_is_open())
+                settingsui_close();
+            if (pc) {
+                pc->paused = 1;
+                audio_set_enabled(false);
+            }
+            ftpui_open();
+        }
+        return false;  // Don't pass to emulator
+    }
+
+    // While the FTP page is open, it owns the keyboard.
+    if (ftpui_is_open()) {
+        ftpui_handle_key(keycode, is_down);
+        if (!ftpui_is_open() && pc && pc->paused) {
+            pc->paused = 0;
+            audio_set_enabled(true);
+        }
+        return false;  // Don't pass to emulator
     }
 
     // Win+F12: enter Disk Manager, or switch to it from Settings.
@@ -666,6 +694,8 @@ static void platform_poll(void *opaque)
             diskui_animate();
         } else if (settingsui_is_open()) {
             settingsui_animate();
+        } else if (ftpui_is_open()) {
+            ftpui_animate();
         }
         const struct timespec frame = { .tv_sec = 0, .tv_nsec = 16000000 };
         nanosleep(&frame, NULL);  // ~60Hz polling/animation rate
@@ -693,6 +723,8 @@ static void run_pc(void)
                 diskui_animate();
             } else if (settingsui_is_open()) {
                 settingsui_animate();
+            } else if (ftpui_is_open()) {
+                ftpui_animate();
             }
             if (settingsui_restart_requested()) {
                 settingsui_clear_restart();

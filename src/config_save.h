@@ -41,6 +41,12 @@ void config_set_raw_sd_hdd(int mode);
 /* Host block device or image file behind the raw BIOS hard disk. */
 const char *config_get_raw_disk(void);
 void config_set_raw_disk(const char *path);
+
+/* FTP server for the disk images (Win+F10): [murm-286] ftp_port,
+ * ftp_user, ftp_password; defaults 2121, "dos", "dos". */
+int config_get_ftp_port(void);
+const char *config_get_ftp_user(void);
+const char *config_get_ftp_password(void);
 #endif
 
 #define USB_MODE_HOST   0

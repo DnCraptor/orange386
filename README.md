@@ -34,6 +34,7 @@ Keyboards and mice are grabbed exclusively while the emulator runs.
 | Ctrl+Alt+End | Quit (also Ctrl+C / SIGTERM from a terminal) |
 | Win+F12 | Disk Manager: change floppy/ATA images and the BIOS image |
 | Win+F11 | Settings: volume, video adapter, CPU, sound devices, mouse |
+| Win+F10 | FTP access to the disk images; Esc restarts the PC |
 
 ## Configuration
 
@@ -46,6 +47,12 @@ Native ARM applications (ELF/EZ executables built for the RP2350) are not suppor
 `[cpu] gen` (also Settings, Win+F11, "CPU Type") selects the CPU core: 0..2 (8086, 80186, 80286) run the real-mode 286 core of murm386's 286 build, 3..5 the 386 core. A change takes effect after the restart the Settings page offers. SeaBIOS is 32-bit code and does not boot on the 286 core: use `bios=native` (or an 8086/286 BIOS image) there.
 
 The native BIOS can also present a whole disk as a raw BIOS hard disk, as murm386 does with its SD card: `raw_disk=/dev/sdX` in `[pc]` / `[386]` names a block device (typically a USB flash drive with an MBR) or a disk image file, and `raw_sd_hdd` places it after (1, default) or before (2) the ATA disks, or hides it (0); the Disk Manager row RAWDISK sets the same. A block device that is mounted on the host is refused, and the drive is read-only if the device or file is. Like on the RP2350, it is only reachable through the native INT 13h, not through IDE/SeaBIOS.
+
+## FTP access to the disk images
+
+Win+F10 is the counterpart of murm386's USB DEVICE mode. It pauses the PC and starts an FTP server that serves the FAT12/16/32 volumes inside the attached floppy and hard disk images (and the raw disk): each one is a top-level directory named after its Disk Manager row (`/FDD-0`, `/ATA0-0`, `/RAWDISK`, ...). CD-ROM images are not served. Esc stops the server and restarts the emulated PC, so the guest never works on data it cached before the change.
+
+The page shows the address to connect to. Settings in `[murm-286]`: `ftp_port` (default 2121), `ftp_user` and `ftp_password` (both default `dos`). One client at a time; passive (PASV/EPSV) and active (PORT) transfers; file names are UTF-8 (long names, code page 866 for short names); transfers are always binary. The volumes are opened with an unmodified copy of ChaN's FatFs R0.16 (`src/imgfs`).
 
 ## Not ported yet
 

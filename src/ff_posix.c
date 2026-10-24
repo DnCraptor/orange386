@@ -569,6 +569,11 @@ bool disk_raw_attach(const char *path)
 	return true;
 }
 
+int disk_raw_fd(void)
+{
+	return raw_fd;
+}
+
 void disk_raw_detach(void)
 {
 	if (raw_fd >= 0) {

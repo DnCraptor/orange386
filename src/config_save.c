@@ -33,6 +33,10 @@ static int cfg_usb_modem = 0;
 static char *cfg_esp_firmware = NULL;
 #if defined(ORANGE386)
 static char *cfg_raw_disk = NULL;      /* host device/image behind raw_sd_hdd */
+/* FTP access to the disk images (Win+F10, ftpui.c) */
+static int cfg_ftp_port = 2121;
+static char *cfg_ftp_user = NULL;      /* NULL: default "dos" */
+static char *cfg_ftp_password = NULL;  /* NULL: default "dos" */
 #endif
 static bool cfg_changed = false;
 
@@ -184,6 +188,10 @@ static void config_set_dynamic_string(char **slot, const char *value, bool hardw
 }
 
 #if defined(ORANGE386)
+int config_get_ftp_port(void) { return cfg_ftp_port; }
+const char *config_get_ftp_user(void) { return cfg_ftp_user ? cfg_ftp_user : "dos"; }
+const char *config_get_ftp_password(void) { return cfg_ftp_password ? cfg_ftp_password : "dos"; }
+
 const char *config_get_raw_disk(void) { return cfg_raw_disk; }
 void config_set_raw_disk(const char *path)
 {
@@ -639,6 +647,14 @@ bool config_save_all(void) {
     }
     snprintf(line, sizeof(line), "native_dos=%d\r\n", cfg_native_dos);
     write_line(&fp, line);
+#if defined(ORANGE386)
+    snprintf(line, sizeof(line), "ftp_port=%d\r\n", cfg_ftp_port);
+    write_line(&fp, line);
+    if (cfg_ftp_user)
+        write_key_value(&fp, "ftp_user=", cfg_ftp_user);
+    if (cfg_ftp_password)
+        write_key_value(&fp, "ftp_password=", cfg_ftp_password);
+#endif
     snprintf(line, sizeof(line), "pcspeaker=%d\r\n", cfg_pcspeaker);
     write_line(&fp, line);
     snprintf(line, sizeof(line), "adlib=%d\r\n", cfg_adlib);
@@ -717,6 +733,23 @@ int parse_frank_386_ini(void* user, const char* section,
     // Accept both new and legacy section names
     if (strcmp(section, "murm-286") != 0 && strcmp(section, "murm386") != 0) return 1;
 
+#if defined(ORANGE386)
+    if (strcmp(name, "ftp_port") == 0) {
+        int port = atoi(value);
+        if (port > 0 && port < 65536)
+            cfg_ftp_port = port;
+        return 1;
+    }
+    if (strcmp(name, "ftp_user") == 0 || strcmp(name, "ftp_password") == 0) {
+        char **slot = name[4] == 'u' ? &cfg_ftp_user : &cfg_ftp_password;
+        char *replacement = strdup(value);
+        if (replacement) {
+            free(*slot);
+            *slot = replacement;
+        }
+        return 1;
+    }
+#endif
     if (strcmp(name, "native_dos") == 0) {
         cfg_native_dos = !!atoi(value);
     } else if (strcmp(name, "video") == 0) {
