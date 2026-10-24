@@ -40,7 +40,7 @@ Keyboards and mice are grabbed exclusively while the emulator runs.
 
 ## Configuration
 
-`386/config.ini` uses the murm386 format: `[pc]` / `[386]` (`bios`, `vga_bios`, `fda`, `fdb`, `hda`..`hdd`, `cda`..`cdd`, `mem_size` in MiB, default 16), `[cpu]` (`gen`, `fpu`) and `[murm-286]` (sound devices, mouse options). Paths are resolved below the working directory, case-insensitively.
+`386/config.ini` uses the murm386 format: `[pc]` (`bios`, `vga_bios`, `fda`, `fdb`, `hda`..`hdd`, `cda`..`cdd`, `mem_size` in MiB, default 16; `[386]` is accepted as an older name of this section), `[cpu]` (`gen`, `fpu`) and `[murm-286]` (sound devices, mouse options, the settings of the Win+F10/F11/F12 pages; the section name is inherited from murm386, which also accepts `[murm386]`). Saving from the Disk Manager or Settings rewrites the file in this layout. Paths are resolved below the working directory, case-insensitively.
 
 `bios=native` (or an empty `bios=`) selects the built-in native BIOS instead of a ROM image: POST, BIOS data area and the INT 10h/13h/16h/1Ah/33h services run as host code. With `native_dos=1` (`[murm-286]`, default; Disk Manager row BOOT) it then starts the built-in FreeDOS kernel and FreeCOM shell, with A: (or C:) as the boot drive. With `native_dos=0` it boots the guest from A:, then C:, then a bootable CD.
 
